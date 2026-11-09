@@ -1,14 +1,12 @@
 // ==UserScript==
 // @name         巴哈動畫瘋 廣告跳過 + 下一集預熱
 // @namespace    https://ani.gamer.com.tw/
-// @version      2.0.0
-// @description  25秒自動看完廣告進正片；看本集時後台自動替「下一集」過廣告，從下一集起無廣告
+// @version      2.1.0
+// @description  25秒自動看完廣告進正片；本集剩8分鐘時後台自動替「下一集」過廣告，從下一集起無廣告
 // @author       you
 // @match        https://ani.gamer.com.tw/animeVideo.php?sn=*
 // @run-at       document-start
 // @grant        unsafeWindow
-// @grant        GM_getValue
-// @grant        GM_setValue
 // @noframes
 // ==/UserScript==
 
@@ -19,12 +17,13 @@
     const D = W.document;
 
     const CONFIG = {
-        SKIP_SECONDS: 25,          // 本集廣告自動完成秒數
-        BACKEND_ELAPSED_MS: 25300, // 本集後端驗證安全門檻 (>=25s)
-        WARMUP_WAIT_MS: 26000,     // 預熱等待秒數 (略高於25s保險)
-        AD_SLOT: '194699',         // 廣告調度 ID (AniGamerPlus 固定值)
-        WARMUP_RETRY: 8,           // 預熱 token 驗證重試次數
-        WARMUP_RETRY_MS: 2000      // 預熱 token 驗證重試間隔
+        SKIP_SECONDS: 25,             // 本集廣告自動完成秒數
+        BACKEND_ELAPSED_MS: 25300,    // 本集後端驗證安全門檻 (>=25s)
+        WARMUP_WAIT_MS: 26000,        // 預熱等待秒數 (略高於25s保險)
+        AD_SLOT: '194699',            // 廣告調度 ID (AniGamerPlus 固定值)
+        WARMUP_RETRY: 8,              // 預熱 token 驗證重試次數
+        WARMUP_RETRY_MS: 2000,        // 預熱 token 驗證重試間隔
+        WARMUP_TRIGGER_REMAIN_SEC: 480 // 正片剩餘播放秒數達此門檻時觸發預熱 (8 分鐘)
     };
 
     const SEL = {
@@ -40,8 +39,8 @@
         deviceId: null,       // 播放器真實使用的 deviceid
         cishuStart: 0,        // 本集廣告計時起點 (毫秒)
         currentSession: null, // 本集廣告生命週期
-        warming: new Set(),   // 正在預熱中的 sn (防重複)
-        warmupStarted: false  // 本頁是否已嘗試啟動預熱
+        warming: new Set(),   // 正在預熱中的 sn (頁面內防重複)
+        warmupStarted: false  // 本頁是否已觸發過預熱
     };
 
     // ---- 工具函式 ----
@@ -79,30 +78,12 @@
         return D.readyState !== 'loading';
     }
 
-    // ---- 已預熱集合 (按 deviceid 隔離，換裝置/換帳號自動失效) ----
-    function loadWarmed() {
-        try {
-            const d = JSON.parse(GM_getValue('ani_warmed', 'null'));
-            if (d && d.deviceid === S.deviceId) return new Set(d.sns || []);
-        } catch (e) {}
-        return new Set();
-    }
-    function saveWarmed(set) {
-        GM_setValue('ani_warmed', JSON.stringify({ deviceid: S.deviceId, sns: Array.from(set) }));
-    }
-    function markWarmed(sn) {
-        const warmed = loadWarmed();
-        warmed.add(sn);
-        saveWarmed(warmed);
-        S.warming.delete(sn);
-    }
-
     // ---- deviceid 捕獲 (保證與播放器一致) ----
     function setDevice(id) {
         if (!id || S.deviceId === id) return;
         S.deviceId = id;
         console.log('[動畫瘋] 捕獲 deviceid:', id);
-        maybeStartWarmup();
+        // 不在此處立即預熱，改由正片進度（剩8分鐘）觸發
     }
     function captureDeviceFromUrl(url) {
         if (typeof url !== 'string') return;
@@ -166,19 +147,13 @@
     //  預熱核心：後台替下一集過廣告
     // ============================================================
     function maybeStartWarmup() {
-        if (S.warmupStarted) return; // 本頁只嘗試一次
+        if (S.warmupStarted) return; // 本頁只觸發一次
         if (!S.deviceId) return;     // 還沒拿到 deviceid
-        if (!domReady()) return;     // DOM 未就緒，等 DOMContentLoaded 再來
+        if (!domReady()) return;     // DOM 未就緒
 
         const next = getNextSn();
         if (next == null) {
             console.log('[動畫瘋] 無下一集可預熱');
-            S.warmupStarted = true;
-            return;
-        }
-        const warmed = loadWarmed();
-        if (warmed.has(next)) {
-            console.log('[動畫瘋] 下一集 sn=' + next + ' 已預熱過，跳過');
             S.warmupStarted = true;
             return;
         }
@@ -201,8 +176,8 @@
                     return;
                 }
                 if (j && j.time === 1) {
-                    console.log('[動畫瘋] sn=' + sn + ' 已通過 (time==1)，直接記錄');
-                    markWarmed(sn);
+                    console.log('[動畫瘋] sn=' + sn + ' 已通過 (time==1)，無需預熱');
+                    S.warming.delete(sn);
                     return;
                 }
                 runWarmupFlow(sn);
@@ -233,7 +208,7 @@
             .then(j => {
                 if (j && j.time === 1) {
                     console.log('[動畫瘋] ✔ 預熱成功！下一集 sn=' + sn + ' 已無廣告');
-                    markWarmed(sn);
+                    S.warming.delete(sn);
                 } else if (tries > 0) {
                     // 未生效：重發 ad=end + videoStart 再查
                     fetch(`/ajax/videoCastcishu.php?sn=${sn}&s=${CONFIG.AD_SLOT}&ad=end`).catch(() => {})
@@ -370,14 +345,24 @@
             }
             if (player) {
                 hookPlayer(player);
-                // 廣告期間強制靜音，正片自動恢復
+                // 定期輪詢：廣告期間強制靜音；正片剩8分鐘時觸發下一集預熱
                 setInterval(() => {
                     const video = D.querySelector(SEL.video);
                     if (!video) return;
+
+                    // 1. 靜音策略：廣告期間靜音，正片解除
                     const adPlaying = D.querySelector('.' + SEL.adPlaying) ||
                                       D.querySelector('.' + SEL.adPlayingGeneric) ||
                                       D.querySelector(SEL.skipBtn);
                     video.muted = !!adPlaying;
+
+                    // 2. 片尾觸發預熱：剩餘播放時間 <= 8 分鐘
+                    if (video.duration && isFinite(video.duration) && video.duration > 0) {
+                        const remain = video.duration - video.currentTime;
+                        if (remain <= CONFIG.WARMUP_TRIGGER_REMAIN_SEC) {
+                            maybeStartWarmup();
+                        }
+                    }
                 }, 500);
                 return;
             }
@@ -406,12 +391,7 @@
     function boot() {
         initDomWatcher();
         initPlayerHook();
-        if (D.readyState === 'loading') {
-            D.addEventListener('DOMContentLoaded', () => maybeStartWarmup());
-        } else {
-            maybeStartWarmup();
-        }
-        console.log('[動畫瘋] 去廣告 + 下一集預熱腳本已載入 v2.0.0');
+        console.log('[動畫瘋] 去廣告 + 下一集預熱腳本已載入 v2.1.0');
     }
     boot();
 })();
