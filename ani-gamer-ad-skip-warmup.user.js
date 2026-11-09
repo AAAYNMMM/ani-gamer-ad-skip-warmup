@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         巴哈動畫瘋 廣告跳過 + 下一集預熱
 // @namespace    https://ani.gamer.com.tw/
-// @version      2.9.0
+// @version      3.0.0
 // @description  25秒自動看完廣告進正片；本集剩8分鐘時後台自動替「下一集」過廣告，從下一集起無廣告
 // @author       you
 // @match        https://ani.gamer.com.tw/animeVideo.php?sn=*
@@ -524,41 +524,66 @@
         attachSeek();
     }
 
-    // 年齡確認自動點擊：按文本匹配（不依賴易變的 class/id），排除「未滿18歲」
+    // 年齡確認：直接隱藏整個遮罩彈窗（連提示都不顯示），並自動點「我已滿18歲」放行播放
     function initAgeGuard() {
-        // 匹配「已滿18」「我已滿18歲」「確認成年」等；不含「未滿」
         const HIT = [/我已滿\s*18/, /已滿\s*18\s*歲/, /滿\s*18\s*歲/, /我已成年/, /確認.*成年/, /我同意.*18/];
         const MISS = /未滿|不滿/;
 
-        let lastClick = 0;
-        const tryClick = () => {
+        // 注入一條樣式：被標記的遮罩直接 display:none
+        const styleEl = D.createElement('style');
+        styleEl.textContent = '[data-ani-age-hidden="1"]{display:none!important;}';
+        (D.head || D.documentElement).appendChild(styleEl);
+
+        let lastAct = 0;
+
+        // 從命中元素往上找「彈窗/遮罩容器」：優先 containing 的 position:fixed / 大面積容器
+        function findOverlay(el) {
+            let node = el;
+            let best = null;
+            for (let i = 0; i < 6 && node && node !== D.body; i++) {
+                const cs = (node.currentStyle || W.getComputedStyle(node));
+                if (cs && (cs.position === 'fixed' || cs.position === 'absolute')) {
+                    best = node; // 記錄最外層 absolute/fixed 容器
+                }
+                // 面積很大、覆蓋全螢幕的也算遮罩
+                if (node.clientWidth >= W.innerWidth * 0.6 && node.clientHeight >= W.innerHeight * 0.6) {
+                    best = node;
+                }
+                node = node.parentElement;
+            }
+            return best || el.parentElement || el;
+        }
+
+        const run = () => {
             const now = Date.now();
-            if (now - lastClick < 800) return; // 節流，避免 MutationObserver 頻繁觸發
+            if (now - lastAct < 500) return;
             const cands = D.querySelectorAll('a, button, [role="button"], div, span');
             for (const el of cands) {
                 const txt = (el.textContent || '').replace(/\s+/g, '');
-                if (!txt || txt.length > 40) continue;          // 只看短文本元素（按鈕類）
-                if (MISS.test(txt)) continue;                    // 排除「未滿18歲」
+                if (!txt || txt.length > 40) continue;
+                if (MISS.test(txt)) continue;
                 if (HIT.some(re => re.test(txt))) {
-                    // 優先點最內層可點擊元素
-                    const target = el.closest('a, button, [role="button"]') || el;
-                    try {
-                        target.click();
-                        lastClick = now;
-                        console.log('[動畫瘋] ✔ 已自動點擊年齡確認：' + txt.slice(0, 20));
-                    } catch (e) {}
+                    lastAct = now;
+                    const overlay = findOverlay(el);
+                    if (overlay) {
+                        overlay.setAttribute('data-ani-age-hidden', '1');
+                        console.log('[動畫瘋] ✔ 已隱藏年齡確認遮罩');
+                    }
+                    // 同時點擊確認按鈕，放行播放（不點會被擋住取流）
+                    const btn = el.closest('a, button, [role="button"]');
+                    if (btn) { try { btn.click(); } catch (e) {} }
                     return;
                 }
             }
         };
 
-        const mo = new MutationObserver(tryClick);
+        const mo = new MutationObserver(run);
         const start = () => {
             if (D.body) mo.observe(D.body, { childList: true, subtree: true });
             else setTimeout(start, 200);
         };
         start();
-        tryClick(); // 首次立即嘗試
+        run();
     }
 
     // domWatcher：跳過按鈕一出現就自動點擊 (雙保險)
@@ -583,7 +608,7 @@
         initAgeGuard();
         initPlayerHook();
         startWarmupPolling(); // 預熱輪詢獨立啟動，不依賴 videojs
-        console.log('[動畫瘋] 去廣告 + 下一集預熱腳本已載入 v2.9.0');
+        console.log('[動畫瘋] 去廣告 + 下一集預熱腳本已載入 v3.0.0');
     }
     boot();
 })();
