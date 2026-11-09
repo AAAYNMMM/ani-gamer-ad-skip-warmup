@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         巴哈動畫瘋 廣告跳過 + 下一集預熱
 // @namespace    https://ani.gamer.com.tw/
-// @version      2.8.0
+// @version      2.9.0
 // @description  25秒自動看完廣告進正片；本集剩8分鐘時後台自動替「下一集」過廣告，從下一集起無廣告
 // @author       you
 // @match        https://ani.gamer.com.tw/animeVideo.php?sn=*
@@ -524,6 +524,43 @@
         attachSeek();
     }
 
+    // 年齡確認自動點擊：按文本匹配（不依賴易變的 class/id），排除「未滿18歲」
+    function initAgeGuard() {
+        // 匹配「已滿18」「我已滿18歲」「確認成年」等；不含「未滿」
+        const HIT = [/我已滿\s*18/, /已滿\s*18\s*歲/, /滿\s*18\s*歲/, /我已成年/, /確認.*成年/, /我同意.*18/];
+        const MISS = /未滿|不滿/;
+
+        let lastClick = 0;
+        const tryClick = () => {
+            const now = Date.now();
+            if (now - lastClick < 800) return; // 節流，避免 MutationObserver 頻繁觸發
+            const cands = D.querySelectorAll('a, button, [role="button"], div, span');
+            for (const el of cands) {
+                const txt = (el.textContent || '').replace(/\s+/g, '');
+                if (!txt || txt.length > 40) continue;          // 只看短文本元素（按鈕類）
+                if (MISS.test(txt)) continue;                    // 排除「未滿18歲」
+                if (HIT.some(re => re.test(txt))) {
+                    // 優先點最內層可點擊元素
+                    const target = el.closest('a, button, [role="button"]') || el;
+                    try {
+                        target.click();
+                        lastClick = now;
+                        console.log('[動畫瘋] ✔ 已自動點擊年齡確認：' + txt.slice(0, 20));
+                    } catch (e) {}
+                    return;
+                }
+            }
+        };
+
+        const mo = new MutationObserver(tryClick);
+        const start = () => {
+            if (D.body) mo.observe(D.body, { childList: true, subtree: true });
+            else setTimeout(start, 200);
+        };
+        start();
+        tryClick(); // 首次立即嘗試
+    }
+
     // domWatcher：跳過按鈕一出現就自動點擊 (雙保險)
     function initDomWatcher() {
         const clickSkip = () => {
@@ -543,9 +580,10 @@
     // ---- 啟動 ----
     function boot() {
         initDomWatcher();
+        initAgeGuard();
         initPlayerHook();
         startWarmupPolling(); // 預熱輪詢獨立啟動，不依賴 videojs
-        console.log('[動畫瘋] 去廣告 + 下一集預熱腳本已載入 v2.8.0');
+        console.log('[動畫瘋] 去廣告 + 下一集預熱腳本已載入 v2.9.0');
     }
     boot();
 })();
