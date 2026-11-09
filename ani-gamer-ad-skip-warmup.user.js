@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         巴哈動畫瘋 廣告跳過 + 下一集預熱
 // @namespace    https://ani.gamer.com.tw/
-// @version      3.1.0
+// @version      3.2.0
 // @description  25秒自動看完廣告進正片；本集剩8分鐘時後台自動替「下一集」過廣告，從下一集起無廣告
 // @author       you
 // @match        https://ani.gamer.com.tw/animeVideo.php?sn=*
@@ -570,10 +570,29 @@
 
             const isBtn = (el) => el.closest('a, button, [role="button"]');
             const clickEl = (btn) => { if (btn) { try { btn.click(); } catch (e) {} } };
+            // 已處理過（已隱藏）的容器：跳過，避免一直重複處理同一個遮罩而卡住後面的
+            const alreadyHidden = (el) => !!el.closest('[data-ani-age-hidden="1"]');
+
+            // 第 0 層（最可靠）：動畫瘋真實分級彈窗結構
+            // <div class="R18"><div class="video-cover-ncc"><div class="ncc-choosearea">...
+            //   <button class="choose-btn-agree" id="adult">同意</button>
+            //   <button class="choose-btn-disagree" id="not-adult">不同意</button>
+            const realGate = D.querySelector('.video-cover-ncc, .ncc-choosearea, .R18 .ncc-choosebar');
+            if (realGate && !alreadyHidden(realGate)) {
+                lastAct = now;
+                const cover = D.querySelector('.video-cover-ncc') || realGate;
+                cover.setAttribute('data-ani-age-hidden', '1');
+                const agree = D.getElementById('adult') || D.querySelector('.choose-btn-agree')
+                    || Array.from(realGate.querySelectorAll('button')).find(b => /同意/.test(b.textContent || ''));
+                if (agree) { try { agree.click(); } catch (e) {} }
+                console.log('[動畫瘋] ✔ 已隱藏分級遮罩(.video-cover-ncc)並點「同意」');
+                return;
+            }
 
             // 第一層：按鈕/短文本直接命中「我已滿X歲 / 已成年」等
             const cands = D.querySelectorAll('a, button, [role="button"], div, span');
             for (const el of cands) {
+                if (alreadyHidden(el)) continue;
                 const txt = (el.textContent || '').replace(/\s+/g, '');
                 if (!txt || txt.length > 40) continue;
                 if (MISS.test(txt)) continue;
@@ -592,6 +611,7 @@
             // 第二層：容器含「年齡/分級/歲」等語義 + 內有「我同意/確認/我了解」按鈕
             const containers = D.querySelectorAll('div');
             for (const box of containers) {
+                if (alreadyHidden(box)) continue;
                 const boxTxt = (box.textContent || '').replace(/\s+/g, '');
                 if (boxTxt.length < 6 || boxTxt.length > 200) continue;
                 if (MISS.test(boxTxt) && !HIT.some(re => re.test(boxTxt))) {
@@ -599,9 +619,10 @@
                     if (!/我已滿|已滿|年滿/.test(boxTxt)) continue;
                 }
                 if (!/(分級|年齡|歲|級別|保護級|輔導|限制級)/.test(boxTxt)) continue;
-                // 找這個容器內的確認按鈕
+                // 找這個容器內的確認按鈕（且未被隱藏）
                 const okBtn = Array.from(box.querySelectorAll('a, button, [role="button"], div, span'))
                     .find(b => {
+                        if (alreadyHidden(b)) return false;
                         const t = (b.textContent || '').replace(/\s+/g, '');
                         return t && t.length <= 20 && /^(我同意|同意|確認|我了解|確定|繼續|我已滿|確認進入)/.test(t);
                     });
@@ -646,7 +667,7 @@
         initAgeGuard();
         initPlayerHook();
         startWarmupPolling(); // 預熱輪詢獨立啟動，不依賴 videojs
-        console.log('[動畫瘋] 去廣告 + 下一集預熱腳本已載入 v3.1.0');
+        console.log('[動畫瘋] 去廣告 + 下一集預熱腳本已載入 v3.2.0');
     }
     boot();
 })();
