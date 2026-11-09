@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         巴哈動畫瘋 廣告跳過 + 下一集預熱
 // @namespace    https://ani.gamer.com.tw/
-// @version      2.4.0
+// @version      2.5.0
 // @description  25秒自動看完廣告進正片；本集剩8分鐘時後台自動替「下一集」過廣告，從下一集起無廣告
 // @author       you
 // @match        https://ani.gamer.com.tw/animeVideo.php?sn=*
@@ -223,15 +223,48 @@
             .catch(() => runWarmupFlow(sn));
     }
 
+    // ---- 設備鎖管理（AniGamerPlus 的 unlock/checklock 流程，解決「同時間僅能播放一部影片」）----
+    function unlockSn(sn) {
+        return fetch(`/ajax/unlock.php?sn=${sn}&ttl=0`, { credentials: 'include' })
+            .then(r => {
+                console.log('[動畫瘋] 🔓 unlock sn=' + sn + ' → HTTP ' + r.status);
+                return r;
+            })
+            .catch(e => {
+                console.warn('[動畫瘋] ⚠ unlock sn=' + sn + ' 請求失敗:', e);
+            });
+    }
+    function checkLockSn(sn) {
+        return fetch(`/ajax/checklock.php?device=${S.deviceId}&sn=${sn}`, { credentials: 'include' })
+            .then(r => r.text())
+            .then(t => {
+                console.log('[動畫瘋] 🔍 checklock sn=' + sn + ' →', t);
+                return t;
+            })
+            .catch(e => {
+                console.warn('[動畫瘋] ⚠ checklock sn=' + sn + ' 請求失敗:', e);
+            });
+    }
+
     function runWarmupFlow(sn) {
-        fetch(`/ajax/videoCastcishu.php?sn=${sn}&s=${CONFIG.AD_SLOT}`)
-            .catch(() => {})
+        // 0. 先清設備鎖（模仿 AniGamerPlus 流程：unlock → checklock → unlock → unlock）
+        console.log('[動畫瘋] 開始清設備鎖，準備預熱 sn=' + sn);
+        unlockSn(sn)
+            .then(() => checkLockSn(sn))
+            .then(() => unlockSn(sn))
+            .then(() => unlockSn(sn))
+            .then(() => {
+                // 1. 開始廣告計時
+                return fetch(`/ajax/videoCastcishu.php?sn=${sn}&s=${CONFIG.AD_SLOT}`, { credentials: 'include' }).catch(() => {});
+            })
             .then(() => {
                 console.log('[動畫瘋] sn=' + sn + ' 廣告計時已開始，等待 ' + (CONFIG.WARMUP_WAIT_MS / 1000) + 's');
+                // 2. 等滿 25s 門檻 (用 26s 保險)
                 setTimeout(() => {
-                    fetch(`/ajax/videoCastcishu.php?sn=${sn}&s=${CONFIG.AD_SLOT}&ad=end`)
+                    // 3. 結束廣告 + 4. videoStart
+                    fetch(`/ajax/videoCastcishu.php?sn=${sn}&s=${CONFIG.AD_SLOT}&ad=end`, { credentials: 'include' })
                         .catch(() => {})
-                        .then(() => fetch(`/ajax/videoStart.php?sn=${sn}`).catch(() => {}))
+                        .then(() => fetch(`/ajax/videoStart.php?sn=${sn}`, { credentials: 'include' }).catch(() => {}))
                         .then(() => verifyWarmup(sn, CONFIG.WARMUP_RETRY));
                 }, CONFIG.WARMUP_WAIT_MS);
             });
