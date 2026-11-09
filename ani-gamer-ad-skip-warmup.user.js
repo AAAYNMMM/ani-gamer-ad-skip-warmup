@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         巴哈動畫瘋 廣告跳過 + 下一集預熱
 // @namespace    https://ani.gamer.com.tw/
-// @version      2.2.0
+// @version      2.3.0
 // @description  25秒自動看完廣告進正片；本集剩8分鐘時後台自動替「下一集」過廣告，從下一集起無廣告
 // @author       you
 // @match        https://ani.gamer.com.tw/animeVideo.php?sn=*
@@ -259,11 +259,18 @@
 
         const base = S.cishuStart || session.startTime;
         const wait = Math.max(0, CONFIG.BACKEND_ELAPSED_MS - (Date.now() - base));
+        console.log('[動畫瘋] 廣告已滿 25 秒，' + wait + 'ms 後發送 &ad=end 並載入正片');
         setTimeout(() => {
             const endUrl = `/ajax/videoCastcishu.php?s=${session.adInfo.adSid}&sn=${session.videoSn}&ad=end`;
             fetch(endUrl)
-                .then(() => { if (session.onComplete) session.onComplete(); })
-                .catch(() => { if (session.onComplete) session.onComplete(); });
+                .then(() => {
+                    console.log('[動畫瘋] ✔ 廣告跳過成功，已載入正片');
+                    if (session.onComplete) session.onComplete();
+                })
+                .catch(() => {
+                    console.warn('[動畫瘋] ⚠ 後端 &ad=end 請求失敗，仍嘗試載入正片');
+                    if (session.onComplete) session.onComplete();
+                });
         }, wait);
     }
 
@@ -365,7 +372,27 @@
         );
     }
 
-    // 片尾預熱輪詢：只在「正片、且確認為整集(>10分鐘)」時，剩8分鐘才觸發
+    // 片尾預熱檢查（核心判斷）：只在「正片、且確認為整集(>10分鐘)」時，剩8分鐘才觸發
+    function checkWarmupTrigger() {
+        if (S.warmupStarted) return;   // 已觸發過，不再判斷
+        if (isAdPhase()) return;        // 廣告階段：duration 只有~30s，會誤判，直接跳過
+        if (!S.deviceId) return;        // 還沒拿到 deviceid
+
+        const video = D.querySelector(SEL.video);
+        if (!video) return;
+
+        const dur = video.duration;
+        if (!dur || !isFinite(dur) || dur <= 0) return;
+        if (dur <= 600) return;         // 太短的不是整集正片 (廣告/預告/短片)，跳過
+
+        const remain = dur - video.currentTime;
+        if (remain <= CONFIG.WARMUP_TRIGGER_REMAIN_SEC) {
+            console.log('[動畫瘋] 正片剩 ' + Math.floor(remain) + ' 秒（≤8分鐘），觸發下一集預熱');
+            maybeStartWarmup();
+        }
+    }
+
+    // 片尾預熱輪詢：每 500ms 檢查一次；並監聽 seeked 事件，拖進度條後立即檢查
     function startWarmupPolling() {
         if (S._pollingStarted) return;
         S._pollingStarted = true;
@@ -388,20 +415,18 @@
             // 1. 靜音策略：廣告期間靜音，正片解除
             video.muted = isAdPhase();
 
-            // 2. 片尾觸發預熱（關鍵守衛見下）
-            if (S.warmupStarted) return;   // 已觸發過，不再判斷
-            if (isAdPhase()) return;        // 廣告階段：duration 只有~30s，會誤判，直接跳過
-            if (!S.deviceId) return;        // 還沒拿到 deviceid
-
-            const dur = video.duration;
-            if (!dur || !isFinite(dur) || dur <= 0) return;
-            if (dur <= 600) return;         // 太短的不是整集正片 (廣告/預告/短片)，跳過
-
-            const remain = dur - video.currentTime;
-            if (remain <= CONFIG.WARMUP_TRIGGER_REMAIN_SEC) {
-                maybeStartWarmup();
-            }
+            // 2. 片尾觸發預熱
+            checkWarmupTrigger();
         }, 500);
+
+        // 拖動進度條（seek）後立即觸發檢查，方便續看 / 測試
+        const attachSeek = () => {
+            const video = D.querySelector(SEL.video);
+            if (!video) { setTimeout(attachSeek, 300); return; }
+            video.addEventListener('seeked', checkWarmupTrigger);
+            video.addEventListener('timeupdate', checkWarmupTrigger);
+        };
+        attachSeek();
     }
 
     // domWatcher：跳過按鈕一出現就自動點擊 (雙保險)
@@ -424,7 +449,7 @@
     function boot() {
         initDomWatcher();
         initPlayerHook();
-        console.log('[動畫瘋] 去廣告 + 下一集預熱腳本已載入 v2.2.0');
+        console.log('[動畫瘋] 去廣告 + 下一集預熱腳本已載入 v2.3.0');
     }
     boot();
 })();
