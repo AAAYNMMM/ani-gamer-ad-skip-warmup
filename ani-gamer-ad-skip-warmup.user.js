@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         巴哈動畫瘋 廣告跳過 + 下一集預熱
 // @namespace    https://ani.gamer.com.tw/
-// @version      3.2.0
+// @version      3.3.0
 // @description  25秒自動看完廣告進正片；本集剩8分鐘時後台自動替「下一集」過廣告，從下一集起無廣告
 // @author       you
 // @match        https://ani.gamer.com.tw/animeVideo.php?sn=*
@@ -645,11 +645,20 @@
         run();
     }
 
-    // domWatcher：跳過按鈕一出現就自動點擊 (雙保險)
+    // domWatcher：跳過按鈕「可跳過」時自動點擊（雙保險）
+    // 重要：動畫瘋的 #adSkipButton 在倒數結束前被點擊，會 window.open 打開付費頁！
+    // 只有倒數歸零、按鈕加上 .enable（或文字變成「點此跳過廣告」）後，點擊才是真跳過。
     function initDomWatcher() {
+        const isSkipReady = (b) => {
+            if (!b) return false;
+            if (b.classList.contains('enable')) return true;
+            const t = (b.textContent || '').replace(/\s+/g, '');
+            // 倒數中是「剩餘 XX 秒」之類；只有出現「點此跳過廣告/跳過」才是可用狀態
+            return /跳過廣告|點此跳過|skip/i.test(t) && !/\d+\s*秒/.test(t);
+        };
         const clickSkip = () => {
             const b = D.querySelector(SEL.skipBtn);
-            if (b) { try { b.click(); } catch (e) {} }
+            if (isSkipReady(b)) { try { b.click(); } catch (e) {} }
         };
         const mo = new MutationObserver(() => {
             if (D.querySelector(SEL.skipBtn)) clickSkip();
@@ -667,7 +676,7 @@
         initAgeGuard();
         initPlayerHook();
         startWarmupPolling(); // 預熱輪詢獨立啟動，不依賴 videojs
-        console.log('[動畫瘋] 去廣告 + 下一集預熱腳本已載入 v3.2.0');
+        console.log('[動畫瘋] 去廣告 + 下一集預熱腳本已載入 v3.3.0');
     }
     boot();
 })();
