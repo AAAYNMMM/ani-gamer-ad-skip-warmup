@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         巴哈動畫瘋 廣告跳過 + 下一集預熱
 // @namespace    https://ani.gamer.com.tw/
-// @version      3.3.0
+// @version      3.4.0
 // @description  25秒自動看完廣告進正片；本集剩8分鐘時後台自動替「下一集」過廣告，從下一集起無廣告
 // @author       you
 // @match        https://ani.gamer.com.tw/animeVideo.php?sn=*
@@ -440,13 +440,15 @@
     // ============================================================
     //  片尾預熱觸發（獨立於播放器掛鉤，避免依賴 videojs 初始化）
     // ============================================================
+    // 是否廣告中：只看「廣告跳過按鈕」是否存在（VAST / 原生廣告各有自己的按鈕）
+    // 不再依賴易變的 ad-playing 類名，覆蓋所有廣告類型，避免漏靜音
     function isAdPhase() {
-        return Boolean(
-            D.querySelector('.' + SEL.adPlaying) ||
-            D.querySelector('.' + SEL.adPlayingGeneric) ||
-            D.querySelector(SEL.vastBlocker) ||
-            D.querySelector(SEL.skipBtn)
-        );
+        const btns = D.querySelectorAll('#adSkipButton, .vast-skip-button, .nativeAD-skip-button');
+        for (const b of btns) {
+            const cs = (b.currentStyle || W.getComputedStyle(b));
+            if (cs && cs.display !== 'none' && cs.visibility !== 'hidden') return true;
+        }
+        return false;
     }
 
     function checkWarmupTrigger() {
@@ -676,7 +678,7 @@
         initAgeGuard();
         initPlayerHook();
         startWarmupPolling(); // 預熱輪詢獨立啟動，不依賴 videojs
-        console.log('[動畫瘋] 去廣告 + 下一集預熱腳本已載入 v3.3.0');
+        console.log('[動畫瘋] 去廣告 + 下一集預熱腳本已載入 v3.4.0');
     }
     boot();
 })();
