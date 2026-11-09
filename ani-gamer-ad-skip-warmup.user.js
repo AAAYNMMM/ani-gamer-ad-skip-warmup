@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         巴哈動畫瘋 廣告跳過 + 下一集預熱
 // @namespace    https://ani.gamer.com.tw/
-// @version      2.5.0
+// @version      2.6.0
 // @description  25秒自動看完廣告進正片；本集剩8分鐘時後台自動替「下一集」過廣告，從下一集起無廣告
 // @author       you
 // @match        https://ani.gamer.com.tw/animeVideo.php?sn=*
@@ -43,9 +43,7 @@
         currentSession: null,  // 本集廣告生命週期
         warming: new Set(),    // 正在預熱中的 sn (頁面內防重複)
         warmupStarted: false,  // 本頁是否已觸發過預熱
-        _pollingStarted: false, // 輪詢是否已啟動 (防重複)
-        _lastDiag: '',          // 診斷快取 (避免刷屏)
-        _lastDiagTime: 0        // 上次診斷輸出時間
+        _pollingStarted: false // 輪詢是否已啟動 (防重複)
     };
 
     // ---- 工具函式 ----
@@ -454,34 +452,6 @@
         }
     }
 
-    // 診斷輸出：每 3 秒輸出一次當前狀態（含未找到 video / deviceid 的情況），方便定位
-    function diag() {
-        const now = Date.now();
-        if (now - S._lastDiagTime < 3000) return;
-        const video = D.querySelector(SEL.video);
-        const dur = video ? getDuration(video) : NaN;
-        const cur = video ? video.currentTime : NaN;
-        const remain = (isFinite(dur) && dur > 0) ? dur - cur : NaN;
-        const phase = {
-            deviceId: S.deviceId ? S.deviceId : null,
-            warmupStarted: S.warmupStarted,
-            adPhase: isAdPhase(),
-            videoFound: !!video,
-            duration: isFinite(dur) ? Math.floor(dur) : String(dur),
-            currentTime: isFinite(cur) ? Math.floor(cur) : String(cur),
-            remain: isFinite(remain) ? Math.floor(remain) : String(remain),
-            currentSn: getCurrentSn(),
-            nextSn: getNextSn(),
-            episodeList: getEpisodeList()
-        };
-        const key = JSON.stringify(phase);
-        if (key !== S._lastDiag) {
-            S._lastDiag = key;
-            S._lastDiagTime = now;
-            console.log('[動畫瘋][診斷]', phase);
-        }
-    }
-
     function startWarmupPolling() {
         if (S._pollingStarted) return;
         S._pollingStarted = true;
@@ -508,9 +478,6 @@
                 // 片尾觸發預熱
                 checkWarmupTrigger();
             }
-
-            // 診斷（無論是否找到 video 都輸出）
-            if (!S.warmupStarted) diag();
         }, 500);
 
         // 拖動進度條後立即檢查
@@ -544,7 +511,7 @@
         initDomWatcher();
         initPlayerHook();
         startWarmupPolling(); // 預熱輪詢獨立啟動，不依賴 videojs
-        console.log('[動畫瘋] 去廣告 + 下一集預熱腳本已載入 v2.4.0');
+        console.log('[動畫瘋] 去廣告 + 下一集預熱腳本已載入 v2.6.0');
     }
     boot();
 })();
