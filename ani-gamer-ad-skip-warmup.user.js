@@ -1,9 +1,17 @@
 // ==UserScript==
-// @name         巴哈動畫瘋 廣告跳過 + 下一集預熱
-// @namespace    https://ani.gamer.com.tw/
+// @name         巴哈動畫瘋 廣告跳過 + 下一集預熱 (Bahamut Ani-Gamer Ad Skipper)
+// @name:en      Bahamut Ani-Gamer Ad Skipper + Next Episode Pre-warm
+// @name:zh-TW   巴哈動畫瘋 廣告跳過 + 下一集預熱
+// @name:zh-CN   巴哈动画疯 广告跳过 + 下一集预热
+// @namespace    https://github.com/AAAYNMMM/ani-gamer-ad-skip-warmup
 // @version      3.4.0
-// @description  25秒自動看完廣告進正片；本集剩8分鐘時後台自動替「下一集」過廣告，從下一集起無廣告
-// @author       you
+// @description  動畫瘋去廣告：本集25秒自動跳過(靜音)、自動隱藏年齡分級遮罩，並在片尾預熱下一集，連播無廣告。不誤觸付費頁。
+// @description:en  Bahamut Ani-Gamer (ani.gamer.com.tw) ad skipper: auto-skip the 25s ad (muted), auto-dismiss the age-rating overlay, and pre-warm the next episode so it plays ad-free. Never opens the paid page.
+// @description:zh-CN 动画疯去广告：本集25秒自动跳过(静音)、自动隐藏年龄分级遮罩，并在片尾预热下一集，连播无广告。不会误触付费页。
+// @author       AAAYNMMM
+// @homepageURL  https://github.com/AAAYNMMM/ani-gamer-ad-skip-warmup
+// @supportURL   https://github.com/AAAYNMMM/ani-gamer-ad-skip-warmup/issues
+// @license      MIT
 // @match        https://ani.gamer.com.tw/animeVideo.php?sn=*
 // @run-at       document-start
 // @grant        unsafeWindow

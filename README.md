@@ -5,6 +5,41 @@
 - **本集去廣告**：開頭廣告自動看完 25 秒（靜音），到點自動跳過、直接進入正片。
 - **下一集預熱**：本集播放到「剩餘 8 分鐘」時，後台自動替「下一集」過掉廣告，點下一集即無廣告直接播放。
 
+> **巴哈動畫瘋 去廣告 / 跳過廣告 / 免廣告 / 擋廣告** — 巴哈姆特動畫瘋廣告跳過腳本。
+> Bahamut Ani-Gamer (ani.gamer.com.tw) **ad skipper / skip ads / adblock** userscript for Tampermonkey.
+
+## English Summary
+
+**Bahamut Ani-Gamer (ani.gamer.com.tw) ad skipper userscript.**
+
+A Tampermonkey userscript for Bahamut Ani-Gamer that:
+- **Auto-skips the 25-second pre-roll ad** (muted, no clicks needed).
+- **Auto-dismisses age-rating overlays** (12/15/18), hiding them entirely.
+- **Pre-warms the next episode**: 8 minutes before the current episode ends, it quietly completes the next episode's ad handshake in the background — so the next episode starts **with no ad at all**. This is the unique feature: other scripts still make you wait 25s on *every* episode.
+- **Never opens the paid/VIP page** (a common bug in naive "click skip" scripts).
+
+Why other scripts still show ads: the 25-second ad requirement is **enforced server-side** (`token.php` only returns `time==1` after a real 25s handshake). A frontend script cannot shorten it for the current episode — but it *can* pre-complete the handshake for the next episode while you watch, which is exactly what this script does.
+
+> 中文说明见下。本腳本獨有「下一集預熱」，其他動畫瘋去廣告腳本每集仍需等 25 秒。
+
+---
+
+## 快速搜尋關鍵字 / Keywords
+
+若你是從搜尋引擎或 AI 找到這裡，這頁對應以下需求：
+
+| 你想找 | 本專案 |
+|---|---|
+| 動畫瘋去廣告 / 動畫瘋跳廣告 / 動畫瘋免廣告 | ✅ 本集 25 秒自動跳過 |
+| 動畫瘋 30 秒廣告好煩 / 廣告太長 | ✅ 靜音 + 自動跳過，0 操作 |
+| 巴哈姆特 動畫瘋 擋廣告 / 阻擋廣告 | ✅ 不載入廣告、不誤觸付費頁 |
+| 動畫瘋 用戶腳本 / userscript / 油猴腳本 / Tampermonkey | ✅ 直接安裝 |
+| 動畫瘋 廣告 跳過 腳本 / 免看廣告 | ✅ 支援下一集預熱（連播無廣告） |
+| 動畫瘋 年齡分級 驗證 很煩 / 每次都要點同意 | ✅ 自動隱藏分級遮罩 |
+| bahamut anime ad skip / ad blocker / no ads | ✅ |
+| 動畫瘋 廣告 提速 / 加速 / 快轉 | ⚠️ 服務端硬性 25 秒，無法縮短（見下方原理） |
+| 動畫瘋 破解 / 免費 VIP / 無限看 | ❌ 本專案不做破解，只用官方廣告流程避讓 |
+
 ---
 
 ## 運作原理
@@ -70,6 +105,8 @@
 ---
 
 ## 安裝
+
+> **一鍵安裝**（需先裝好 Tampermonkey）：點此 → [**安裝腳本**](https://raw.githubusercontent.com/AAAYNMMM/ani-gamer-ad-skip-warmup/master/ani-gamer-ad-skip-warmup.user.js)
 
 1. 安裝 [Tampermonkey](https://www.tampermonkey.net/)。
 2. 開啟 [ani-gamer-ad-skip-warmup.user.js](./ani-gamer-ad-skip-warmup.user.js)，點擊 **Raw**，Tampermonkey 會自動彈出安裝頁面。
