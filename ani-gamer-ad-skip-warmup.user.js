@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         巴哈動畫瘋 廣告跳過 + 下一集預熱
 // @namespace    https://ani.gamer.com.tw/
-// @version      2.7.0
+// @version      2.8.0
 // @description  25秒自動看完廣告進正片；本集剩8分鐘時後台自動替「下一集」過廣告，從下一集起無廣告
 // @author       you
 // @match        https://ani.gamer.com.tw/animeVideo.php?sn=*
@@ -43,7 +43,8 @@
         currentSession: null,  // 本集廣告生命週期
         warming: new Set(),    // 正在預熱中的 sn (頁面內防重複)
         warmupStarted: false,  // 本頁是否已觸發過預熱
-        _pollingStarted: false // 輪詢是否已啟動 (防重複)
+        _pollingStarted: false, // 輪詢是否已啟動 (防重複)
+        armed: true             // 首頁載入即視為已武裝；SPA 切集後需等新集 currentTime 回到開頭才重新武裝
     };
 
     // ---- 工具函式 ----
@@ -455,6 +456,17 @@
         const video = D.querySelector(SEL.video);
         if (!video) return;
 
+        // 切集後必須先確認 video 已切到「本集」的時間軸（currentTime 回到開頭），
+        // 否則會拿上一集殘留的 currentTime 誤判成片尾，在新集片頭就觸發預熱。
+        if (!S.armed) {
+            if (video.currentTime < 60) {
+                S.armed = true;
+                console.log('[動畫瘋] 已確認新集載入（currentTime=' + Math.floor(video.currentTime) + 's），開始監測播放進度');
+            } else {
+                return;
+            }
+        }
+
         const dur = getDuration(video);
         if (!isFinite(dur) || dur <= 0) return;
         if (dur <= CONFIG.MIN_EPISODE_SEC) return;
@@ -479,6 +491,7 @@
             if (cur !== null && cur !== lastSn) {
                 lastSn = cur;
                 S.warmupStarted = false;
+                S.armed = false;          // ← 切集後重新武裝，等新集 currentTime 回到開頭
                 S.warming.clear();
                 S.currentSession = null;
                 S.cishuStart = 0;
@@ -500,6 +513,13 @@
             if (!video) { setTimeout(attachSeek, 300); return; }
             video.addEventListener('seeked', checkWarmupTrigger);
             video.addEventListener('timeupdate', checkWarmupTrigger);
+            // SPA 切集後，新集 metadata 載入且 currentTime 已回到開頭 → 重新武裝
+            video.addEventListener('loadedmetadata', () => {
+                if (!S.armed && video.currentTime < 60) {
+                    S.armed = true;
+                    console.log('[動畫瘋] 新集 metadata 已載入，重新武裝預熱判斷');
+                }
+            });
         };
         attachSeek();
     }
@@ -525,7 +545,7 @@
         initDomWatcher();
         initPlayerHook();
         startWarmupPolling(); // 預熱輪詢獨立啟動，不依賴 videojs
-        console.log('[動畫瘋] 去廣告 + 下一集預熱腳本已載入 v2.7.0');
+        console.log('[動畫瘋] 去廣告 + 下一集預熱腳本已載入 v2.8.0');
     }
     boot();
 })();
