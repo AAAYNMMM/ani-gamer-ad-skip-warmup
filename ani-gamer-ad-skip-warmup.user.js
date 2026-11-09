@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         巴哈動畫瘋 廣告跳過 + 下一集預熱
 // @namespace    https://ani.gamer.com.tw/
-// @version      2.6.0
+// @version      2.7.0
 // @description  25秒自動看完廣告進正片；本集剩8分鐘時後台自動替「下一集」過廣告，從下一集起無廣告
 // @author       you
 // @match        https://ani.gamer.com.tw/animeVideo.php?sn=*
@@ -222,6 +222,8 @@
     }
 
     // ---- 設備鎖管理（AniGamerPlus 的 unlock/checklock 流程，解決「同時間僅能播放一部影片」）----
+    function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
+
     function unlockSn(sn) {
         return fetch(`/ajax/unlock.php?sn=${sn}&ttl=0`, { credentials: 'include' })
             .then(r => {
@@ -243,55 +245,67 @@
                 console.warn('[動畫瘋] ⚠ checklock sn=' + sn + ' 請求失敗:', e);
             });
     }
-
-    function runWarmupFlow(sn) {
-        // 0. 先清設備鎖（模仿 AniGamerPlus 流程：unlock → checklock → unlock → unlock）
-        console.log('[動畫瘋] 開始清設備鎖，準備預熱 sn=' + sn);
-        unlockSn(sn)
-            .then(() => checkLockSn(sn))
-            .then(() => unlockSn(sn))
-            .then(() => unlockSn(sn))
-            .then(() => {
-                // 1. 開始廣告計時
-                return fetch(`/ajax/videoCastcishu.php?sn=${sn}&s=${CONFIG.AD_SLOT}`, { credentials: 'include' }).catch(() => {});
-            })
-            .then(() => {
-                console.log('[動畫瘋] sn=' + sn + ' 廣告計時已開始，等待 ' + (CONFIG.WARMUP_WAIT_MS / 1000) + 's');
-                // 2. 等滿 25s 門檻 (用 26s 保險)
-                setTimeout(() => {
-                    // 3. 結束廣告 + 4. videoStart
-                    fetch(`/ajax/videoCastcishu.php?sn=${sn}&s=${CONFIG.AD_SLOT}&ad=end`, { credentials: 'include' })
-                        .catch(() => {})
-                        .then(() => fetch(`/ajax/videoStart.php?sn=${sn}`, { credentials: 'include' }).catch(() => {}))
-                        .then(() => verifyWarmup(sn, CONFIG.WARMUP_RETRY));
-                }, CONFIG.WARMUP_WAIT_MS);
-            });
+    function fetchText(url) {
+        return fetch(url, { credentials: 'include' })
+            .then(r => r.text())
+            .catch(e => 'ERR:' + e);
+    }
+    function hasLockError(text) {
+        return typeof text === 'string' && text.indexOf('僅提供播放一部影片') !== -1;
+    }
+    function checkToken(sn) {
+        return fetch(`/ajax/token.php?sn=${sn}&device=${S.deviceId}&hash=${randStr(12)}`, { credentials: 'include' })
+            .then(r => r.json())
+            .then(j => !!(j && j.time === 1))
+            .catch(() => false);
     }
 
-    function verifyWarmup(sn, tries) {
-        fetch(`/ajax/token.php?sn=${sn}&device=${S.deviceId}&hash=${randStr(12)}`)
-            .then(r => r.json())
-            .then(j => {
-                if (j && j.time === 1) {
-                    console.log('[動畫瘋] ✔ 預熱成功！下一集 sn=' + sn + ' 已無廣告');
-                    S.warming.delete(sn);
-                } else if (tries > 0) {
-                    fetch(`/ajax/videoCastcishu.php?sn=${sn}&s=${CONFIG.AD_SLOT}&ad=end`).catch(() => {})
-                        .then(() => fetch(`/ajax/videoStart.php?sn=${sn}`).catch(() => {}))
-                        .then(() => setTimeout(() => verifyWarmup(sn, tries - 1), CONFIG.WARMUP_RETRY_MS));
-                } else {
-                    console.warn('[動畫瘋] ✘ 預熱失敗 sn=' + sn + '（token 未返回 time==1）');
-                    S.warming.delete(sn);
+    async function runWarmupFlow(sn) {
+        try {
+            // 0. 清設備鎖（unlock → checklock → unlock ×2）
+            console.log('[動畫瘋] 開始清設備鎖，準備預熱 sn=' + sn);
+            await unlockSn(sn);
+            await checkLockSn(sn);
+            await unlockSn(sn);
+            await unlockSn(sn);
+
+            // 1. 開始廣告計時
+            const r1 = await fetchText(`/ajax/videoCastcishu.php?sn=${sn}&s=${CONFIG.AD_SLOT}`);
+            if (hasLockError(r1)) console.warn('[動畫瘋] ⚠ 廣告計時遭遇設備鎖衝突');
+            console.log('[動畫瘋] sn=' + sn + ' 廣告計時已開始，等待 ' + (CONFIG.WARMUP_WAIT_MS / 1000) + 's');
+
+            // 2. 等滿 25s 門檻（26s 保險）
+            await sleep(CONFIG.WARMUP_WAIT_MS);
+
+            // 3. 結束廣告
+            const r2 = await fetchText(`/ajax/videoCastcishu.php?sn=${sn}&s=${CONFIG.AD_SLOT}&ad=end`);
+            if (hasLockError(r2)) console.warn('[動畫瘋] ⚠ ad=end 遭遇設備鎖衝突');
+
+            // 4. 先只查 token；若已 time==1，就不必調 videoStart（避免搶佔設備鎖、干擾當前播放）
+            let ok = await checkToken(sn);
+            if (!ok) {
+                // 5. 仍需要 videoStart 才計數
+                const r3 = await fetchText(`/ajax/videoStart.php?sn=${sn}`);
+                if (hasLockError(r3)) console.warn('[動畫瘋] ⚠ videoStart 遭遇設備鎖衝突（可能干擾當前集播放）');
+                // 6. 重試查 token
+                for (let i = 0; i < CONFIG.WARMUP_RETRY; i++) {
+                    if (await checkToken(sn)) { ok = true; break; }
+                    await sleep(CONFIG.WARMUP_RETRY_MS);
                 }
-            })
-            .catch(() => {
-                if (tries > 0) {
-                    setTimeout(() => verifyWarmup(sn, tries - 1), CONFIG.WARMUP_RETRY_MS);
-                } else {
-                    console.warn('[動畫瘋] ✘ 預熱失敗 sn=' + sn + '（token 請求異常）');
-                    S.warming.delete(sn);
-                }
-            });
+            }
+
+            if (ok) {
+                console.log('[動畫瘋] ✔ 預熱成功！下一集 sn=' + sn + ' 已無廣告');
+            } else {
+                console.warn('[動畫瘋] ✘ 預熱失敗 sn=' + sn + '（token 未返回 time==1）');
+            }
+        } catch (e) {
+            console.warn('[動畫瘋] 預熱流程異常:', e);
+        } finally {
+            // 7. 無論成敗都釋放下一集鎖，讓設備回到當前集，避免「同時間僅能播放一部影片」
+            await unlockSn(sn);
+            S.warming.delete(sn);
+        }
     }
 
     // ============================================================
@@ -511,7 +525,7 @@
         initDomWatcher();
         initPlayerHook();
         startWarmupPolling(); // 預熱輪詢獨立啟動，不依賴 videojs
-        console.log('[動畫瘋] 去廣告 + 下一集預熱腳本已載入 v2.6.0');
+        console.log('[動畫瘋] 去廣告 + 下一集預熱腳本已載入 v2.7.0');
     }
     boot();
 })();

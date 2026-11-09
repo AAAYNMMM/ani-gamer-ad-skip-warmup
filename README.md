@@ -58,9 +58,12 @@
 5. videoCastcishu.php?sn=<下一集>&s=194699 # 開始廣告計時
 6. 等待 26 秒（>25s 門檻）
 7. videoCastcishu.php?...&ad=end          # 結束廣告
-8. videoStart.php?sn=<下一集>             # 標記開始
-9. 反覆查 token.php 直到 time==1          # 確認預熱成功
+8. token.php 查詢 → time==1 則「預熱成功」
+   └─ 若尚未通過，才補發 videoStart.php 並重試 token
+9. 無論成敗都 unlock.php 釋放設備鎖        # 讓設備回到當前集，避免搶佔
 ```
+
+> **為何步驟 8 要「先查 token、必要時才 videoStart」？** 因為 `videoStart` 會把設備登記為「正在播放下一集」，與當前正在播的這集衝突，正是「本服務同時間內僅提供播放一部影片！」的來源。能只靠廣告計數（`videoCastcishu` + `ad=end`）就讓 `token.php` 通過時，就不調 `videoStart`，最大限度避開鎖衝突。
 
 預熱成功後，`S.warming`（頁面內 Set）記錄該集，防止重複預熱。
 
