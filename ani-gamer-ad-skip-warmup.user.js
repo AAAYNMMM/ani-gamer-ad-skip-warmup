@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         巴哈動畫瘋 廣告跳過 + 下一集預熱
 // @namespace    https://ani.gamer.com.tw/
-// @version      2.3.0
+// @version      2.4.0
 // @description  25秒自動看完廣告進正片；本集剩8分鐘時後台自動替「下一集」過廣告，從下一集起無廣告
 // @author       you
 // @match        https://ani.gamer.com.tw/animeVideo.php?sn=*
@@ -23,7 +23,8 @@
         AD_SLOT: '194699',            // 廣告調度 ID (AniGamerPlus 固定值)
         WARMUP_RETRY: 8,              // 預熱 token 驗證重試次數
         WARMUP_RETRY_MS: 2000,        // 預熱 token 驗證重試間隔
-        WARMUP_TRIGGER_REMAIN_SEC: 480 // 正片剩餘播放秒數達此門檻時觸發預熱 (8 分鐘)
+        WARMUP_TRIGGER_REMAIN_SEC: 480, // 正片剩餘播放秒數達此門檻時觸發預熱 (8 分鐘)
+        MIN_EPISODE_SEC: 600          // 判定為「整集正片」的最短時長 (10 分鐘)
     };
 
     const SEL = {
@@ -42,7 +43,9 @@
         currentSession: null,  // 本集廣告生命週期
         warming: new Set(),    // 正在預熱中的 sn (頁面內防重複)
         warmupStarted: false,  // 本頁是否已觸發過預熱
-        _pollingStarted: false // 輪詢是否已啟動 (防重複)
+        _pollingStarted: false, // 輪詢是否已啟動 (防重複)
+        _lastDiag: '',          // 診斷快取 (避免刷屏)
+        _lastDiagTime: 0        // 上次診斷輸出時間
     };
 
     // ---- 工具函式 ----
@@ -58,14 +61,24 @@
         return m ? parseInt(m[1], 10) : null;
     }
 
-    // 從頁面「劇集列表」區塊 (section.season 的 <a href="?sn=...">) 解析全部集數
+    // 從頁面解析全部劇集 (優先 section.season 列表，缺省則掃全頁 animeVideo 連結)
     function getEpisodeList() {
         const out = [];
+        const seen = new Set();
+        const push = (sn) => { if (!seen.has(sn)) { seen.add(sn); out.push(sn); } };
+
         D.querySelectorAll('section.season a[href]').forEach(a => {
             const m = (a.getAttribute('href') || '').match(/[?&]sn=(\d+)/);
-            if (m) out.push(parseInt(m[1], 10));
+            if (m) push(parseInt(m[1], 10));
         });
-        return Array.from(new Set(out));
+
+        if (out.length === 0) {
+            D.querySelectorAll('a[href*="animeVideo.php"]').forEach(a => {
+                const m = (a.getAttribute('href') || '').match(/[?&]sn=(\d+)/);
+                if (m) push(parseInt(m[1], 10));
+            });
+        }
+        return out;
     }
 
     function getNextSn() {
@@ -80,25 +93,49 @@
         return D.readyState !== 'loading';
     }
 
+    // 取得正片總時長（相容 duration 為 Infinity 的 HLS 串流）
+    function getDuration(video) {
+        let d = video.duration;
+        if (isFinite(d) && d > 0) return d;
+        try {
+            if (video.seekable && video.seekable.length > 0) {
+                const end = video.seekable.end(video.seekable.length - 1);
+                if (isFinite(end) && end > 0) return end;
+            }
+        } catch (e) {}
+        // videojs player 的 duration() 更可靠
+        try {
+            const vjs = W.videojs;
+            if (vjs && vjs.getPlayers) {
+                const players = vjs.getPlayers();
+                for (const k in players) {
+                    const p = players[k];
+                    if (p && typeof p.duration === 'function') {
+                        const pd = p.duration();
+                        if (isFinite(pd) && pd > 0) return pd;
+                    }
+                }
+            }
+        } catch (e) {}
+        return NaN;
+    }
+
     // ---- deviceid 捕獲 (保證與播放器一致) ----
     function setDevice(id) {
         if (!id || S.deviceId === id) return;
         S.deviceId = id;
-        console.log('[動畫瘋] 捕獲 deviceid:', id);
-        // 不在此處立即預熱，改由正片進度（剩8分鐘）觸發
+        console.log('[動畫瘋] ✔ 捕獲 deviceid:', id);
+        checkWarmupTrigger();
     }
     function captureDeviceFromUrl(url) {
         if (typeof url !== 'string') return;
-        // token.php?sn=..&device=.. 是播放器載正片前必發的請求，device 就是真身
         if (url.includes('token.php') && url.includes('device=')) {
             const m = url.match(/[?&]device=([^&]+)/);
             if (m) setDevice(decodeURIComponent(m[1]));
         }
     }
-    // 統一處理攔截到的 URL
     function handleUrl(url) {
         if (typeof url !== 'string') return;
-        // 記錄「本集」廣告計時起點；排除預熱對其他集發的請求，避免污染本集計時
         if (url.includes('/ajax/videoCastcishu.php') && !url.includes('ad=end')) {
             const m = url.match(/[?&]sn=(\d+)/);
             if (m && parseInt(m[1], 10) === getCurrentSn()) {
@@ -149,13 +186,13 @@
     //  預熱核心：後台替下一集過廣告
     // ============================================================
     function maybeStartWarmup() {
-        if (S.warmupStarted) return; // 本頁只觸發一次
-        if (!S.deviceId) return;     // 還沒拿到 deviceid
-        if (!domReady()) return;     // DOM 未就緒
+        if (S.warmupStarted) return;
+        if (!S.deviceId) { console.log('[動畫瘋] 尚未捕獲 deviceid，暫不預熱'); return; }
+        if (!domReady()) return;
 
         const next = getNextSn();
         if (next == null) {
-            console.log('[動畫瘋] 無下一集可預熱');
+            console.log('[動畫瘋] 無下一集可預熱（劇集列表: ' + JSON.stringify(getEpisodeList()) + '，當前 sn=' + getCurrentSn() + '）');
             S.warmupStarted = true;
             return;
         }
@@ -168,7 +205,6 @@
         S.warming.add(sn);
         console.log('[動畫瘋] 開始後台預熱下一集 sn=' + sn);
 
-        // 先查一次 token，判斷 VIP / 是否已通過
         fetch(`/ajax/token.php?sn=${sn}&device=${S.deviceId}&hash=${randStr(12)}`)
             .then(r => r.json())
             .then(j => {
@@ -188,14 +224,11 @@
     }
 
     function runWarmupFlow(sn) {
-        // 1. 開始廣告計時
         fetch(`/ajax/videoCastcishu.php?sn=${sn}&s=${CONFIG.AD_SLOT}`)
             .catch(() => {})
             .then(() => {
                 console.log('[動畫瘋] sn=' + sn + ' 廣告計時已開始，等待 ' + (CONFIG.WARMUP_WAIT_MS / 1000) + 's');
-                // 2. 等滿 25s 門檻 (用 26s 保險)
                 setTimeout(() => {
-                    // 3. 結束廣告 + 4. videoStart
                     fetch(`/ajax/videoCastcishu.php?sn=${sn}&s=${CONFIG.AD_SLOT}&ad=end`)
                         .catch(() => {})
                         .then(() => fetch(`/ajax/videoStart.php?sn=${sn}`).catch(() => {}))
@@ -212,12 +245,11 @@
                     console.log('[動畫瘋] ✔ 預熱成功！下一集 sn=' + sn + ' 已無廣告');
                     S.warming.delete(sn);
                 } else if (tries > 0) {
-                    // 未生效：重發 ad=end + videoStart 再查
                     fetch(`/ajax/videoCastcishu.php?sn=${sn}&s=${CONFIG.AD_SLOT}&ad=end`).catch(() => {})
                         .then(() => fetch(`/ajax/videoStart.php?sn=${sn}`).catch(() => {}))
                         .then(() => setTimeout(() => verifyWarmup(sn, tries - 1), CONFIG.WARMUP_RETRY_MS));
                 } else {
-                    console.warn('[動畫瘋] ✘ 預熱失敗 sn=' + sn);
+                    console.warn('[動畫瘋] ✘ 預熱失敗 sn=' + sn + '（token 未返回 time==1）');
                     S.warming.delete(sn);
                 }
             })
@@ -225,6 +257,7 @@
                 if (tries > 0) {
                     setTimeout(() => verifyWarmup(sn, tries - 1), CONFIG.WARMUP_RETRY_MS);
                 } else {
+                    console.warn('[動畫瘋] ✘ 預熱失敗 sn=' + sn + '（token 請求異常）');
                     S.warming.delete(sn);
                 }
             });
@@ -278,7 +311,6 @@
         if (!player || player.__aniHooked) return;
         player.__aniHooked = true;
 
-        // 攔截 adHandler：捕獲廣告生命週期與 onComplete
         const setupAd = (h) => {
             if (h && !h.__playHooked) {
                 h.__playHooked = true;
@@ -302,7 +334,6 @@
             try { setupAd(player.adHandler()); } catch (e) {}
         }
 
-        // 攔截 animeAd / nativeAd 插件：倒數鎖 25s、壓制 error/end 回退
         const hookPlugin = (name) => {
             if (typeof player[name] !== 'function') return;
             const op = player[name].bind(player);
@@ -320,7 +351,7 @@
                     const ot = inst.trigger.bind(inst);
                     inst.trigger = function (evt) {
                         const t = (typeof evt === 'string') ? evt : (evt && evt.type) || '';
-                        if (t === 'error' || t === inst.AD_EVENTS?.ERROR) return; // 防止回退 Google Ads
+                        if (t === 'error' || t === inst.AD_EVENTS?.ERROR) return;
                         if (t === 'end' || t === inst.AD_EVENTS?.END) {
                             finishAd(S.currentSession);
                             return;
@@ -336,7 +367,6 @@
         hookPlugin('animeAd');
         hookPlugin('nativeAd');
 
-        // 壓制廣告期間 player.error 彈窗
         const oe = player.error.bind(player);
         player.error = function (err) {
             if (err && S.currentSession && !S.currentSession.ended) return null;
@@ -354,7 +384,6 @@
             }
             if (player) {
                 hookPlayer(player);
-                startWarmupPolling();
                 return;
             }
             setTimeout(tryHook, 300);
@@ -362,7 +391,9 @@
         tryHook();
     }
 
-    // 判斷當前是否仍在播廣告 (video 元素放的是廣告)
+    // ============================================================
+    //  片尾預熱觸發（獨立於播放器掛鉤，避免依賴 videojs 初始化）
+    // ============================================================
     function isAdPhase() {
         return Boolean(
             D.querySelector('.' + SEL.adPlaying) ||
@@ -372,18 +403,16 @@
         );
     }
 
-    // 片尾預熱檢查（核心判斷）：只在「正片、且確認為整集(>10分鐘)」時，剩8分鐘才觸發
     function checkWarmupTrigger() {
-        if (S.warmupStarted) return;   // 已觸發過，不再判斷
-        if (isAdPhase()) return;        // 廣告階段：duration 只有~30s，會誤判，直接跳過
-        if (!S.deviceId) return;        // 還沒拿到 deviceid
+        if (S.warmupStarted) return;
+        if (!S.deviceId) return;
 
         const video = D.querySelector(SEL.video);
         if (!video) return;
 
-        const dur = video.duration;
-        if (!dur || !isFinite(dur) || dur <= 0) return;
-        if (dur <= 600) return;         // 太短的不是整集正片 (廣告/預告/短片)，跳過
+        const dur = getDuration(video);
+        if (!isFinite(dur) || dur <= 0) return;
+        if (dur <= CONFIG.MIN_EPISODE_SEC) return;
 
         const remain = dur - video.currentTime;
         if (remain <= CONFIG.WARMUP_TRIGGER_REMAIN_SEC) {
@@ -392,13 +421,43 @@
         }
     }
 
-    // 片尾預熱輪詢：每 500ms 檢查一次；並監聽 seeked 事件，拖進度條後立即檢查
+    // 診斷輸出：每 3 秒輸出一次當前狀態（含未找到 video / deviceid 的情況），方便定位
+    function diag() {
+        const now = Date.now();
+        if (now - S._lastDiagTime < 3000) return;
+        const video = D.querySelector(SEL.video);
+        const dur = video ? getDuration(video) : NaN;
+        const cur = video ? video.currentTime : NaN;
+        const remain = (isFinite(dur) && dur > 0) ? dur - cur : NaN;
+        const phase = {
+            deviceId: S.deviceId ? S.deviceId : null,
+            warmupStarted: S.warmupStarted,
+            adPhase: isAdPhase(),
+            videoFound: !!video,
+            duration: isFinite(dur) ? Math.floor(dur) : String(dur),
+            currentTime: isFinite(cur) ? Math.floor(cur) : String(cur),
+            remain: isFinite(remain) ? Math.floor(remain) : String(remain),
+            currentSn: getCurrentSn(),
+            nextSn: getNextSn(),
+            episodeList: getEpisodeList()
+        };
+        const key = JSON.stringify(phase);
+        if (key !== S._lastDiag) {
+            S._lastDiag = key;
+            S._lastDiagTime = now;
+            console.log('[動畫瘋][診斷]', phase);
+        }
+    }
+
     function startWarmupPolling() {
         if (S._pollingStarted) return;
         S._pollingStarted = true;
+        console.log('[動畫瘋] 預熱輪詢已啟動（獨立於播放器）');
+
         let lastSn = getCurrentSn();
+
         setInterval(() => {
-            // SPA 切集偵測：URL 的 sn 變了就重置本頁狀態（相容播放器「下一集」按鈕若走 history.pushState）
+            // SPA 切集偵測
             const cur = getCurrentSn();
             if (cur !== null && cur !== lastSn) {
                 lastSn = cur;
@@ -410,16 +469,18 @@
             }
 
             const video = D.querySelector(SEL.video);
-            if (!video) return;
+            if (video) {
+                // 靜音策略：廣告期間靜音，正片解除
+                video.muted = isAdPhase();
+                // 片尾觸發預熱
+                checkWarmupTrigger();
+            }
 
-            // 1. 靜音策略：廣告期間靜音，正片解除
-            video.muted = isAdPhase();
-
-            // 2. 片尾觸發預熱
-            checkWarmupTrigger();
+            // 診斷（無論是否找到 video 都輸出）
+            if (!S.warmupStarted) diag();
         }, 500);
 
-        // 拖動進度條（seek）後立即觸發檢查，方便續看 / 測試
+        // 拖動進度條後立即檢查
         const attachSeek = () => {
             const video = D.querySelector(SEL.video);
             if (!video) { setTimeout(attachSeek, 300); return; }
@@ -449,7 +510,8 @@
     function boot() {
         initDomWatcher();
         initPlayerHook();
-        console.log('[動畫瘋] 去廣告 + 下一集預熱腳本已載入 v2.3.0');
+        startWarmupPolling(); // 預熱輪詢獨立啟動，不依賴 videojs
+        console.log('[動畫瘋] 去廣告 + 下一集預熱腳本已載入 v2.4.0');
     }
     boot();
 })();
