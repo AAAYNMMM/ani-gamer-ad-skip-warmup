@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         巴哈動畫瘋 廣告跳過 + 下一集預熱
 // @namespace    https://ani.gamer.com.tw/
-// @version      3.0.0
+// @version      3.1.0
 // @description  25秒自動看完廣告進正片；本集剩8分鐘時後台自動替「下一集」過廣告，從下一集起無廣告
 // @author       you
 // @match        https://ani.gamer.com.tw/animeVideo.php?sn=*
@@ -524,10 +524,20 @@
         attachSeek();
     }
 
-    // 年齡確認：直接隱藏整個遮罩彈窗（連提示都不顯示），並自動點「我已滿18歲」放行播放
+    // 年齡分級確認：直接隱藏整個遮罩彈窗（連提示都不顯示），並自動點確認放行播放
+    // 兼容 12/15/18 等各種分級，不再寫死 18 歲
     function initAgeGuard() {
-        const HIT = [/我已滿\s*18/, /已滿\s*18\s*歲/, /滿\s*18\s*歲/, /我已成年/, /確認.*成年/, /我同意.*18/];
-        const MISS = /未滿|不滿/;
+        const HIT = [
+            /我已滿\s*\d{1,2}\s*歲/,      // 我已滿18歲 / 我已滿12歲
+            /已滿\s*\d{1,2}\s*歲/,         // 已滿15歲
+            /年滿\s*\d{1,2}\s*歲/,         // 年滿18歲
+            /滿\s*\d{1,2}\s*歲以上/,       // 滿18歲以上
+            /我已成年/,                    // 我已成年
+            /我已年滿/,                    // 我已年滿
+            /確認.*成年/,                  // 確認已成年
+            /我.*已滿.*歲/                 // 兜底
+        ];
+        const MISS = /未滿|不滿/;         // 排除「未滿/不滿 X 歲」
 
         // 注入一條樣式：被標記的遮罩直接 display:none
         const styleEl = D.createElement('style');
@@ -557,6 +567,11 @@
         const run = () => {
             const now = Date.now();
             if (now - lastAct < 500) return;
+
+            const isBtn = (el) => el.closest('a, button, [role="button"]');
+            const clickEl = (btn) => { if (btn) { try { btn.click(); } catch (e) {} } };
+
+            // 第一層：按鈕/短文本直接命中「我已滿X歲 / 已成年」等
             const cands = D.querySelectorAll('a, button, [role="button"], div, span');
             for (const el of cands) {
                 const txt = (el.textContent || '').replace(/\s+/g, '');
@@ -567,11 +582,34 @@
                     const overlay = findOverlay(el);
                     if (overlay) {
                         overlay.setAttribute('data-ani-age-hidden', '1');
-                        console.log('[動畫瘋] ✔ 已隱藏年齡確認遮罩');
+                        console.log('[動畫瘋] ✔ 已隱藏分級確認遮罩（命中：' + txt.slice(0, 16) + '）');
                     }
-                    // 同時點擊確認按鈕，放行播放（不點會被擋住取流）
-                    const btn = el.closest('a, button, [role="button"]');
-                    if (btn) { try { btn.click(); } catch (e) {} }
+                    clickEl(isBtn(el) || el);
+                    return;
+                }
+            }
+
+            // 第二層：容器含「年齡/分級/歲」等語義 + 內有「我同意/確認/我了解」按鈕
+            const containers = D.querySelectorAll('div');
+            for (const box of containers) {
+                const boxTxt = (box.textContent || '').replace(/\s+/g, '');
+                if (boxTxt.length < 6 || boxTxt.length > 200) continue;
+                if (MISS.test(boxTxt) && !HIT.some(re => re.test(boxTxt))) {
+                    // 若整體含未滿又無正面確認文字，跳過
+                    if (!/我已滿|已滿|年滿/.test(boxTxt)) continue;
+                }
+                if (!/(分級|年齡|歲|級別|保護級|輔導|限制級)/.test(boxTxt)) continue;
+                // 找這個容器內的確認按鈕
+                const okBtn = Array.from(box.querySelectorAll('a, button, [role="button"], div, span'))
+                    .find(b => {
+                        const t = (b.textContent || '').replace(/\s+/g, '');
+                        return t && t.length <= 20 && /^(我同意|同意|確認|我了解|確定|繼續|我已滿|確認進入)/.test(t);
+                    });
+                if (okBtn) {
+                    lastAct = now;
+                    box.setAttribute('data-ani-age-hidden', '1');
+                    console.log('[動畫瘋] ✔ 已隱藏分級確認遮罩（容器語義命中）');
+                    clickEl(okBtn.closest('a, button, [role="button"]') || okBtn);
                     return;
                 }
             }
@@ -608,7 +646,7 @@
         initAgeGuard();
         initPlayerHook();
         startWarmupPolling(); // 預熱輪詢獨立啟動，不依賴 videojs
-        console.log('[動畫瘋] 去廣告 + 下一集預熱腳本已載入 v3.0.0');
+        console.log('[動畫瘋] 去廣告 + 下一集預熱腳本已載入 v3.1.0');
     }
     boot();
 })();
