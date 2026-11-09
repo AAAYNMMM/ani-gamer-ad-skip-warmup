@@ -121,7 +121,8 @@ Why other scripts still show ads: the 25-second ad requirement is **enforced ser
 | 功能 | 說明 |
 | --- | --- |
 | 本集去廣告 | 開頭廣告自動倒數 25 秒、靜音，到點自動跳過進正片 |
-| 廣告靜音判斷 | 用「廣告跳過按鈕是否存在」（`#adSkipButton` / `.vast-skip-button` / `.nativeAD-skip-button`）判定廣告中，覆蓋 VAST 與原生廣告，不再依賴易變的 ad-playing 類名 |
+| 廣告靜音判斷 | 用播放器自己加/刪的 `vjs-*-ad-playing` 類名判斷廣告（含 `vjs-ad-playing` / `vjs-anigamer-ad-playing` / `vjs-anigamer-m3u8-ad-playing` 等全變體）；**不用「跳過按鈕存在」判斷**（按鈕可能殘留，會誤靜音正片） |
+| 尊重手動靜音 | 只恢復「腳本自動靜的音」；你自己按的靜音不會被正片播放覆蓋 |
 | 跳過按鈕安全點擊 | **只在倒數歸零（按鈕 `.enable` / 文字「點此跳過廣告」）時才點**；倒數中點擊會觸發官方的 `window.open(animePay.php)` 付費頁 |
 | 年齡分級確認 | 用真實結構精確命中（`.video-cover-ncc` + `#adult`「同意」按鈕）直接隱藏遮罩並放行；另保留文本/容器語義兩層兜底，覆蓋 12/15/18 各級 |
 | 下一集預熱 | 本集剩 8 分鐘時，後台釋放設備鎖、替下一集過廣告 |
