@@ -81,24 +81,27 @@ Why other scripts still show ads: the 25-second ad requirement is **enforced ser
 - 觸發條件：**正片播放中、時長 >10 分鐘（排除 30 秒廣告）、剩餘 ≤8 分鐘**。
 - 兼容 HLS 串流的 `duration === Infinity`：回退用 `seekable.end()` 與 `player.duration()` 取得總時長。
 
-### 4. 後台預熱下一集（完整流程）
+### 4. 後台預熱下一集（無設備鎖干擾設計）
 
 ```
 1. token.php?sn=<下一集>&device=..        # 檢查是否 VIP / 已通過
    ├─ VIP 或 time==1 → 直接結束（無需預熱）
    └─ 否則繼續 ↓
-2. unlock.php?sn=<下一集>&ttl=0           # 釋放設備鎖
-3. checklock.php?device=..&sn=<下一集>    # 確認鎖狀態
-4. unlock.php ×2                          # 補償釋放（與 AniGamerPlus 一致）
-5. videoCastcishu.php?sn=<下一集>&s=194699 # 開始廣告計時
-6. 等待 26 秒（>25s 門檻）
-7. videoCastcishu.php?...&ad=end          # 結束廣告
-8. token.php 查詢 → time==1 則「預熱成功」
-   └─ 若尚未通過，才補發 videoStart.php 並重試 token
-9. 無論成敗都 unlock.php 釋放設備鎖        # 讓設備回到當前集，避免搶佔
+2. videoCastcishu.php?sn=<下一集>&s=<adSid> # 直接開始廣告計時（不預先調 checklock/videoStart，不搶當前集播放鎖）
+3. 等待 26 秒（>25s 門檻）
+4. videoCastcishu.php?...&ad=end          # 結束廣告
+5. token.php 查詢 → time==1 則「預熱成功」（全程零觸鎖）
+   └─ 僅當未通過時，才短暫釋放當前集鎖 → 補發 videoStart.php → 立即將播放鎖交還當前集
 ```
 
-> **為何步驟 8 要「先查 token、必要時才 videoStart」？** 因為 `videoStart` 會把設備登記為「正在播放下一集」，與當前正在播的這集衝突，正是「本服務同時間內僅提供播放一部影片！」的來源。能只靠廣告計數（`videoCastcishu` + `ad=end`）就讓 `token.php` 通過時，就不調 `videoStart`，最大限度避開鎖衝突。
+> **為何預熱不能預先調 `checklock.php` / `videoStart.php`？**
+> 官方播放器（`anime_player.js`）中，`checklock.php` 與 `videoStart` 是**正片開始播放時登記「正在觀看該集」的佔鎖介面**，並非廣告介面；而正在播放的當前集每 60 秒會透過 `elapse.php?sn=<當前集>` 校驗設備鎖。若預熱對下一集調用 `checklock.php` 或只對下一集 `unlock.php` 而不把鎖交還當前集，當前集下一次 `elapse.php` 心跳就會收到 `state=4`（「本服務同時間內僅提供播放一部影片！」）並觸發 `animeMask().showError` 銷毀播放器。
+>
+> 本腳本採用四層防鎖干擾機制：
+> 1. **純廣告握手優先**：預熱預設只走 `token.php` + `videoCastcishu.php`（與官方廣告階段完全一致），不碰 `checklock.php` / `videoStart.php`。
+> 2. **借鎖必還當前集**：一旦後端回傳鎖衝突或需補發 `videoStart.php`，會先解開**當前集**與下一集鎖，完成後立即透過 `checklock.php?sn=<當前集>` 將設備鎖交還給正在播放的當前集。
+> 3. **攔截 `elapse.php` 與 `animeMask().showError` 自癒**：若當前集 `elapse.php` 心跳或 `video_src.php` 因瞬態鎖衝突返回異常（如 `state=4`），自動在後台重新為當前集取回設備鎖並放行響應，絕不讓播放器彈出錯誤遮罩或 `dispose()` 中斷播放。
+> 4. **切集與卸載自動退鎖**：SPA 切集、`pagehide` / `beforeunload` 離開頁面前自動以 `keepalive` 發送 `unlock.php` 釋放上一集鎖，並用 `sessionEpoch` 中止舊集未完成的異步預熱，確保無廣告秒進下一集時不撞鎖。
 
 預熱成功後，`S.warming`（頁面內 Set）記錄該集，防止重複預熱。
 
@@ -125,7 +128,8 @@ Why other scripts still show ads: the 25-second ad requirement is **enforced ser
 | 尊重手動靜音 | 只恢復「腳本自動靜的音」；你自己按的靜音不會被正片播放覆蓋 |
 | 跳過按鈕安全點擊 | **只在倒數歸零（按鈕 `.enable` / 文字「點此跳過廣告」）時才點**；倒數中點擊會觸發官方的 `window.open(animePay.php)` 付費頁 |
 | 年齡分級確認 | 用真實結構精確命中（`.video-cover-ncc` + `#adult`「同意」按鈕）直接隱藏遮罩並放行；另保留文本/容器語義兩層兜底，覆蓋 12/15/18 各級 |
-| 下一集預熱 | 本集剩 8 分鐘時，後台釋放設備鎖、替下一集過廣告 |
+| 下一集預熱 | 本集剩 8 分鐘時，後台以純廣告握手替下一集過廣告，不搶佔當前集播放鎖 |
+| 設備鎖防干擾與自癒 | 預熱不預調 `checklock`；借鎖必還當前集；攔截 `elapse.php` (`state=4`)、`video_src.php` 與 `animeMask().showError` 自動恢復當前集鎖，防止「同時間僅能播放一部影片」中斷播放；切集/離頁 `keepalive` 自動退鎖 |
 | 拖進度條 | 支援拖到片尾快速測試 / 續看，`seeked` 立即觸發檢查 |
 | 切集武裝 | 切集後先等新集 `currentTime` 回到開頭（<60s）才恢復預熱判斷，避免用上一集殘留進度誤觸發 |
 | 防重複 | 頁面內 `warming` Set 防止重複預熱同一集 |

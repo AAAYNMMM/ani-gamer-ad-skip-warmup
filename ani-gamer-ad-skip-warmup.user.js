@@ -1,9 +1,17 @@
 // ==UserScript==
-// @name         巴哈動畫瘋 廣告跳過 + 下一集預熱
-// @namespace    https://ani.gamer.com.tw/
-// @version      3.4.0
-// @description  25秒自動看完廣告進正片；本集剩8分鐘時後台自動替「下一集」過廣告，從下一集起無廣告
-// @author       you
+// @name         巴哈動畫瘋 廣告跳過 + 下一集預熱 (Bahamut Ani-Gamer Ad Skipper)
+// @name:en      Bahamut Ani-Gamer Ad Skipper + Next Episode Pre-warm
+// @name:zh-TW   巴哈動畫瘋 廣告跳過 + 下一集預熱
+// @name:zh-CN   巴哈动画疯 广告跳过 + 下一集预热
+// @namespace    https://github.com/AAAYNMMM/ani-gamer-ad-skip-warmup
+// @version      3.5.0
+// @description  動畫瘋去廣告：本集25秒自動跳過(靜音)、自動隱藏年齡分級遮罩，並在片尾無鎖干擾預熱下一集，連播無廣告。不誤觸付費頁。
+// @description:en  Bahamut Ani-Gamer (ani.gamer.com.tw) ad skipper: auto-skip the 25s ad (muted), auto-dismiss the age-rating overlay, and pre-warm the next episode without device-lock interference. Never opens the paid page.
+// @description:zh-CN 动画疯去广告：本集25秒自动跳过(静音)、自动隐藏年龄分级遮罩，并在片尾无锁干扰预热下一集，连播无广告。不会误触付费页。
+// @author       AAAYNMMM
+// @homepageURL  https://github.com/AAAYNMMM/ani-gamer-ad-skip-warmup
+// @supportURL   https://github.com/AAAYNMMM/ani-gamer-ad-skip-warmup/issues
+// @license      MIT
 // @match        https://ani.gamer.com.tw/animeVideo.php?sn=*
 // @run-at       document-start
 // @grant        unsafeWindow
@@ -17,14 +25,14 @@
     const D = W.document;
 
     const CONFIG = {
-        SKIP_SECONDS: 25,             // 本集廣告自動完成秒數
-        BACKEND_ELAPSED_MS: 25300,    // 本集後端驗證安全門檻 (>=25s)
-        WARMUP_WAIT_MS: 26000,        // 預熱等待秒數 (略高於25s保險)
-        AD_SLOT: '194699',            // 廣告調度 ID (AniGamerPlus 固定值)
-        WARMUP_RETRY: 8,              // 預熱 token 驗證重試次數
-        WARMUP_RETRY_MS: 2000,        // 預熱 token 驗證重試間隔
+        SKIP_SECONDS: 25,               // 本集廣告自動完成秒數
+        BACKEND_ELAPSED_MS: 25300,      // 本集後端驗證安全門檻 (>=25s)
+        WARMUP_WAIT_MS: 26000,          // 預熱等待秒數 (略高於25s保險)
+        AD_SLOT: '194699',              // 廣告調度 ID 兜底值
+        WARMUP_RETRY: 6,                // 預熱 token 驗證重試次數
+        WARMUP_RETRY_MS: 1500,          // 預熱 token 驗證重試間隔
         WARMUP_TRIGGER_REMAIN_SEC: 480, // 正片剩餘播放秒數達此門檻時觸發預熱 (8 分鐘)
-        MIN_EPISODE_SEC: 600          // 判定為「整集正片」的最短時長 (10 分鐘)
+        MIN_EPISODE_SEC: 600            // 判定為「整集正片」的最短時長 (10 分鐘)
     };
 
     const SEL = {
@@ -39,12 +47,16 @@
     // ---- 全域狀態 ----
     const S = {
         deviceId: null,        // 播放器真實使用的 deviceid
+        lastAdSid: null,       // 頁面真實使用的廣告調度 adSid
         cishuStart: 0,         // 本集廣告計時起點 (毫秒)
         currentSession: null,  // 本集廣告生命週期
         warming: new Set(),    // 正在預熱中的 sn (頁面內防重複)
         warmupStarted: false,  // 本頁是否已觸發過預熱
-        _pollingStarted: false, // 輪詢是否已啟動 (防重複)
-        armed: true             // 首頁載入即視為已武裝；SPA 切集後需等新集 currentTime 回到開頭才重新武裝
+        _pollingStarted: false,// 輪詢是否已啟動 (防重複)
+        armed: true,           // 首頁載入即視為已武裝；SPA 切集後需等新集 currentTime 回到開頭才重新武裝
+        autoMuted: false,      // 是否由腳本自動靜音（尊重用戶手動靜音）
+        lockBusy: false,       // 預熱是否正在操作設備鎖（期間暫緩 elapse 心跳防撞鎖）
+        sessionEpoch: 0        // 切集計數器（切集時中止舊集未完成的預熱流程）
     };
 
     // ---- 工具函式 ----
@@ -135,29 +147,117 @@
     }
     function handleUrl(url) {
         if (typeof url !== 'string') return;
-        if (url.includes('/ajax/videoCastcishu.php') && !url.includes('ad=end')) {
-            const m = url.match(/[?&]sn=(\d+)/);
-            if (m && parseInt(m[1], 10) === getCurrentSn()) {
-                S.cishuStart = Date.now();
+        if (url.includes('/ajax/videoCastcishu.php')) {
+            const sm = url.match(/[?&]s=([^&]+)/);
+            if (sm && sm[1]) S.lastAdSid = decodeURIComponent(sm[1]);
+            if (!url.includes('ad=end')) {
+                const m = url.match(/[?&]sn=(\d+)/);
+                if (m && parseInt(m[1], 10) === getCurrentSn()) {
+                    S.cishuStart = Date.now();
+                }
             }
         }
         captureDeviceFromUrl(url);
     }
 
+    // 取得真實可用的廣告調度 ID (優先使用頁面當前廣告調度，回退固定值)
+    function getAdSlot() {
+        if (S.lastAdSid) return S.lastAdSid;
+        try {
+            if (typeof W.getAd === 'function') {
+                const ad = W.getAd();
+                if (ad && ad[2]) return String(ad[2]);
+            }
+            if (typeof W.getMajorAd === 'function') {
+                const ad = W.getMajorAd();
+                if (ad && ad[2]) return String(ad[2]);
+            }
+        } catch (e) {}
+        return CONFIG.AD_SLOT;
+    }
+
     // ---- 網路攔截：fetch ----
     const origFetch = W.fetch.bind(W);
+
+    // 將設備鎖交還給當前正在觀看的正片（避免後台預熱觸鎖後，當前集 elapse.php 回傳 state=4 殺死播放器）
+    async function restoreCurrentLock(curSn) {
+        const target = curSn || getCurrentSn();
+        if (!target || !S.deviceId) return;
+        try {
+            await origFetch(`/ajax/checklock.php?device=${S.deviceId}&sn=${target}`, { credentials: 'include' });
+            await origFetch(`/ajax/checklock.php?sn=${target}`, { credentials: 'include' });
+            console.log('[動畫瘋] 🔒 已將設備鎖交還當前集 sn=' + target);
+        } catch (e) {}
+    }
+
+    function makeOkElapseResponse(fallbackDevice) {
+        return new Response(JSON.stringify({ state: 'ok', device: S.deviceId || fallbackDevice || '' }), {
+            status: 200,
+            headers: { 'Content-Type': 'application/json' }
+        });
+    }
+
     W.fetch = function (resource, init) {
         let url = '';
         try {
             url = typeof resource === 'string' ? resource : (resource && resource.url) || '';
         } catch (e) {}
         handleUrl(url);
+
+        // 防護 1：若預熱正在短暫操作設備鎖，暫緩當前集的 elapse.php 心跳，直接回傳 ok，防止撞鎖
+        if (url.includes('/ajax/elapse.php') && S.lockBusy) {
+            return Promise.resolve(makeOkElapseResponse());
+        }
+
         const p = origFetch(resource, init);
         try {
             if (url.includes('/ajax/getdeviceid.php')) {
                 p.then(r => r.clone().json()).then(j => {
                     if (j && j.deviceid) setDevice(j.deviceid);
                 }).catch(() => {});
+            }
+
+            // 防護 2：攔截 elapse.php 響應；若後端因預熱或切集瞬態回傳 state=4（同時間僅能播放一部影片），
+            // 自動在後台把鎖交還當前集並改寫為 state='ok'，防止官方播放器呼叫 animeMask().showError 銷毀播放器
+            if (url.includes('/ajax/elapse.php')) {
+                return p.then(async (resp) => {
+                    try {
+                        const data = await resp.clone().json();
+                        if (data && data.state && data.state !== 'ok' && data.state !== 1) {
+                            console.warn('[動畫瘋] 🛡 攔截到 elapse.php 設備鎖異常 (state=' + data.state + ')，自動恢復當前集設備鎖並保持播放');
+                            const cur = getCurrentSn();
+                            if (cur) {
+                                origFetch(`/ajax/unlock.php?sn=${cur}&ttl=0`, { credentials: 'include' })
+                                    .then(() => restoreCurrentLock(cur))
+                                    .catch(() => {});
+                            }
+                            return makeOkElapseResponse(data.device);
+                        }
+                    } catch (e) {}
+                    return resp;
+                });
+            }
+
+            // 防護 3：切集載入 video_src.php 時若因上一集鎖尚未釋放而報錯，自動解鎖並重試一次
+            if (url.includes('/anime/v1/video_src.php')) {
+                return p.then(async (resp) => {
+                    try {
+                        const data = await resp.clone().json();
+                        if (data && data.error) {
+                            const cur = getCurrentSn();
+                            console.warn('[動畫瘋] 🛡 video_src.php 遭遇鎖衝突，自動釋放設備鎖並重試:', data.error);
+                            if (cur) {
+                                await origFetch(`/ajax/unlock.php?sn=${cur}&ttl=0`, { credentials: 'include' }).catch(() => {});
+                                if (S.deviceId) {
+                                    await origFetch(`/ajax/checklock.php?device=${S.deviceId}&sn=${cur}`, { credentials: 'include' }).catch(() => {});
+                                }
+                                await origFetch(`/ajax/unlock.php?sn=${cur}&ttl=0`, { credentials: 'include' }).catch(() => {});
+                            }
+                            return origFetch(resource, init);
+                        }
+                    } catch (e) {}
+                    return resp;
+                });
             }
         } catch (e) {}
         return p;
@@ -182,7 +282,7 @@
     };
 
     // ============================================================
-    //  預熱核心：後台替下一集過廣告
+    //  預熱核心：後台替下一集過廣告（無鎖干擾設計）
     // ============================================================
     function maybeStartWarmup() {
         if (S.warmupStarted) return;
@@ -196,17 +296,21 @@
             return;
         }
         S.warmupStarted = true;
-        warmup(next);
+        warmup(next, S.sessionEpoch);
     }
 
-    function warmup(sn) {
+    function warmup(sn, epoch) {
         if (!S.deviceId || S.warming.has(sn)) return;
         S.warming.add(sn);
         console.log('[動畫瘋] 開始後台預熱下一集 sn=' + sn);
 
-        fetch(`/ajax/token.php?sn=${sn}&device=${S.deviceId}&hash=${randStr(12)}`)
+        origFetch(`/ajax/token.php?sn=${sn}&device=${S.deviceId}&hash=${randStr(12)}`, { credentials: 'include' })
             .then(r => r.json())
             .then(j => {
+                if (S.sessionEpoch !== epoch || getCurrentSn() === sn) {
+                    S.warming.delete(sn);
+                    return;
+                }
                 if (j && j.vip) {
                     console.log('[動畫瘋] VIP 帳號，無需預熱 sn=' + sn);
                     S.warming.delete(sn);
@@ -217,16 +321,17 @@
                     S.warming.delete(sn);
                     return;
                 }
-                runWarmupFlow(sn);
+                runWarmupFlow(sn, epoch);
             })
-            .catch(() => runWarmupFlow(sn));
+            .catch(() => runWarmupFlow(sn, epoch));
     }
 
-    // ---- 設備鎖管理（AniGamerPlus 的 unlock/checklock 流程，解決「同時間僅能播放一部影片」）----
+    // ---- 設備鎖與請求工具 ----
     function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 
-    function unlockSn(sn) {
-        return fetch(`/ajax/unlock.php?sn=${sn}&ttl=0`, { credentials: 'include' })
+    function unlockSn(sn, keepalive = false) {
+        if (!sn) return Promise.resolve();
+        return origFetch(`/ajax/unlock.php?sn=${sn}&ttl=0`, { credentials: 'include', keepalive })
             .then(r => {
                 console.log('[動畫瘋] 🔓 unlock sn=' + sn + ' → HTTP ' + r.status);
                 return r;
@@ -235,61 +340,82 @@
                 console.warn('[動畫瘋] ⚠ unlock sn=' + sn + ' 請求失敗:', e);
             });
     }
-    function checkLockSn(sn) {
-        return fetch(`/ajax/checklock.php?device=${S.deviceId}&sn=${sn}`, { credentials: 'include' })
-            .then(r => r.text())
-            .then(t => {
-                console.log('[動畫瘋] 🔍 checklock sn=' + sn + ' →', t);
-                return t;
-            })
-            .catch(e => {
-                console.warn('[動畫瘋] ⚠ checklock sn=' + sn + ' 請求失敗:', e);
-            });
-    }
     function fetchText(url) {
-        return fetch(url, { credentials: 'include' })
+        return origFetch(url, { credentials: 'include' })
             .then(r => r.text())
             .catch(e => 'ERR:' + e);
     }
     function hasLockError(text) {
-        return typeof text === 'string' && text.indexOf('僅提供播放一部影片') !== -1;
+        return typeof text === 'string' && /僅提供播放一部影片|僅限一台裝置|僅允許一個裝置/.test(text);
     }
     function checkToken(sn) {
-        return fetch(`/ajax/token.php?sn=${sn}&device=${S.deviceId}&hash=${randStr(12)}`, { credentials: 'include' })
+        return origFetch(`/ajax/token.php?sn=${sn}&device=${S.deviceId}&hash=${randStr(12)}`, { credentials: 'include' })
             .then(r => r.json())
             .then(j => !!(j && j.time === 1))
             .catch(() => false);
     }
 
-    async function runWarmupFlow(sn) {
-        try {
-            // 0. 清設備鎖（unlock → checklock → unlock ×2）
-            console.log('[動畫瘋] 開始清設備鎖，準備預熱 sn=' + sn);
-            await unlockSn(sn);
-            await checkLockSn(sn);
-            await unlockSn(sn);
-            await unlockSn(sn);
+    // 僅在後端返回鎖衝突時，才短暫釋放當前集與目標集鎖
+    async function releaseActiveLocks(curSn, nextSn) {
+        S.lockBusy = true;
+        if (curSn && curSn !== nextSn) await unlockSn(curSn);
+        await unlockSn(nextSn);
+    }
 
-            // 1. 開始廣告計時
-            const r1 = await fetchText(`/ajax/videoCastcishu.php?sn=${sn}&s=${CONFIG.AD_SLOT}`);
-            if (hasLockError(r1)) console.warn('[動畫瘋] ⚠ 廣告計時遭遇設備鎖衝突');
-            console.log('[動畫瘋] sn=' + sn + ' 廣告計時已開始，等待 ' + (CONFIG.WARMUP_WAIT_MS / 1000) + 's');
+    async function runWarmupFlow(sn, epoch) {
+        const isStale = () => S.sessionEpoch !== epoch || getCurrentSn() === sn;
+        let lockTouched = false;
+        const adSlot = getAdSlot();
+
+        try {
+            if (isStale()) return;
+
+            // 1. 直接開始廣告計時（不預先調用 checklock.php / videoStart.php，避免搶奪當前集播放鎖）
+            let r1 = await fetchText(`/ajax/videoCastcishu.php?sn=${sn}&s=${adSlot}`);
+            if (isStale()) return;
+            if (hasLockError(r1)) {
+                console.warn('[動畫瘋] ⚠ 廣告計時遭遇設備鎖衝突，短暫釋放當前集鎖後重試');
+                lockTouched = true;
+                await releaseActiveLocks(getCurrentSn(), sn);
+                r1 = await fetchText(`/ajax/videoCastcishu.php?sn=${sn}&s=${adSlot}`);
+                // 若在等待 26 秒期間曾釋放過鎖，立即先還鎖給當前集，避免等待期間 elapse 心跳失鎖
+                await restoreCurrentLock(getCurrentSn());
+                S.lockBusy = false;
+            }
+            console.log('[動畫瘋] sn=' + sn + ' 廣告計時已開始 (s=' + adSlot + ')，等待 ' + (CONFIG.WARMUP_WAIT_MS / 1000) + 's');
 
             // 2. 等滿 25s 門檻（26s 保險）
             await sleep(CONFIG.WARMUP_WAIT_MS);
+            if (isStale()) return;
 
             // 3. 結束廣告
-            const r2 = await fetchText(`/ajax/videoCastcishu.php?sn=${sn}&s=${CONFIG.AD_SLOT}&ad=end`);
-            if (hasLockError(r2)) console.warn('[動畫瘋] ⚠ ad=end 遭遇設備鎖衝突');
+            let r2 = await fetchText(`/ajax/videoCastcishu.php?sn=${sn}&s=${adSlot}&ad=end`);
+            if (isStale()) return;
+            if (hasLockError(r2)) {
+                console.warn('[動畫瘋] ⚠ ad=end 遭遇設備鎖衝突，短暫釋放當前集鎖後重試');
+                lockTouched = true;
+                await releaseActiveLocks(getCurrentSn(), sn);
+                r2 = await fetchText(`/ajax/videoCastcishu.php?sn=${sn}&s=${adSlot}&ad=end`);
+            }
 
-            // 4. 先只查 token；若已 time==1，就不必調 videoStart（避免搶佔設備鎖、干擾當前播放）
-            let ok = await checkToken(sn);
-            if (!ok) {
-                // 5. 仍需要 videoStart 才計數
+            // 4. 優先只靠廣告計數驗證 token（不碰 checklock / videoStart，零鎖干擾）
+            let ok = false;
+            for (let i = 0; i < 3; i++) {
+                if (isStale()) return;
+                if (await checkToken(sn)) { ok = true; break; }
+                await sleep(1000);
+                if (isStale()) return;
+                await fetchText(`/ajax/videoCastcishu.php?sn=${sn}&s=${adSlot}&ad=end`);
+            }
+
+            // 5. 僅當純廣告計數仍未讓 token 變成 time==1 時，才短暫借鎖執行 videoStart 並立即歸還
+            if (!ok && !isStale()) {
+                lockTouched = true;
+                await releaseActiveLocks(getCurrentSn(), sn);
                 const r3 = await fetchText(`/ajax/videoStart.php?sn=${sn}`);
-                if (hasLockError(r3)) console.warn('[動畫瘋] ⚠ videoStart 遭遇設備鎖衝突（可能干擾當前集播放）');
-                // 6. 重試查 token
+                if (hasLockError(r3)) console.warn('[動畫瘋] ⚠ videoStart 遭遇設備鎖衝突');
                 for (let i = 0; i < CONFIG.WARMUP_RETRY; i++) {
+                    if (isStale()) break;
                     if (await checkToken(sn)) { ok = true; break; }
                     await sleep(CONFIG.WARMUP_RETRY_MS);
                 }
@@ -297,14 +423,21 @@
 
             if (ok) {
                 console.log('[動畫瘋] ✔ 預熱成功！下一集 sn=' + sn + ' 已無廣告');
-            } else {
+            } else if (!isStale()) {
                 console.warn('[動畫瘋] ✘ 預熱失敗 sn=' + sn + '（token 未返回 time==1）');
             }
         } catch (e) {
             console.warn('[動畫瘋] 預熱流程異常:', e);
         } finally {
-            // 7. 無論成敗都釋放下一集鎖，讓設備回到當前集，避免「同時間僅能播放一部影片」
-            await unlockSn(sn);
+            // 6. 若預熱期間曾觸碰過設備鎖，且用戶仍在觀看原本那集，則釋放下一集鎖並將鎖交還當前集
+            if (lockTouched) {
+                const cur = getCurrentSn();
+                if (cur !== sn) {
+                    await unlockSn(sn);
+                    if (cur) await restoreCurrentLock(cur);
+                }
+            }
+            S.lockBusy = false;
             S.warming.delete(sn);
         }
     }
@@ -331,8 +464,11 @@
         const skipBtn = D.querySelector(SEL.skipBtn);
         if (skipBtn) skipBtn.remove();
         const video = D.querySelector(SEL.video);
-        if (video) video.muted = false;
-        if (session.player && typeof session.player.muted === 'function') {
+        if (video && S.autoMuted) {
+            video.muted = false;
+            S.autoMuted = false;
+        }
+        if (session.player && typeof session.player.muted === 'function' && S.autoMuted) {
             try { session.player.muted(false); } catch (e) {}
         }
 
@@ -341,7 +477,7 @@
         console.log('[動畫瘋] 廣告已滿 25 秒，' + wait + 'ms 後發送 &ad=end 並載入正片');
         setTimeout(() => {
             const endUrl = `/ajax/videoCastcishu.php?s=${session.adInfo.adSid}&sn=${session.videoSn}&ad=end`;
-            fetch(endUrl)
+            origFetch(endUrl, { credentials: 'include' })
                 .then(() => {
                     console.log('[動畫瘋] ✔ 廣告跳過成功，已載入正片');
                     if (session.onComplete) session.onComplete();
@@ -362,6 +498,7 @@
                 h.__playHooked = true;
                 const op = h.play.bind(h);
                 h.play = function (videoSn, adInfo, onComplete) {
+                    if (adInfo && adInfo.adSid) S.lastAdSid = String(adInfo.adSid);
                     S.currentSession = {
                         player, handlerInst: h, videoSn, adInfo, onComplete,
                         startTime: Date.now(), ended: false
@@ -378,6 +515,34 @@
                 return inst;
             };
             try { setupAd(player.adHandler()); } catch (e) {}
+        }
+
+        // 攔截 animeMask().showError：防止設備鎖異常提示觸發 this.player.dispose() 銷毀播放器
+        const setupMask = (m) => {
+            if (m && !m.__maskHooked && typeof m.showError === 'function') {
+                m.__maskHooked = true;
+                const origShowError = m.showError.bind(m);
+                m.showError = function (msg) {
+                    if (typeof msg === 'string' && /僅提供播放一部影片|僅限一台裝置|僅允許一個裝置/.test(msg)) {
+                        console.warn('[動畫瘋] 🛡 已攔截播放器設備鎖錯誤遮罩，自動恢復設備鎖:', msg);
+                        const cur = getCurrentSn();
+                        if (cur) {
+                            unlockSn(cur).then(() => restoreCurrentLock(cur));
+                        }
+                        return;
+                    }
+                    return origShowError(msg);
+                };
+            }
+        };
+        if (typeof player.animeMask === 'function') {
+            const om = player.animeMask.bind(player);
+            player.animeMask = function () {
+                const inst = om.apply(this, arguments);
+                setupMask(inst);
+                return inst;
+            };
+            try { setupMask(player.animeMask()); } catch (e) {}
         }
 
         const hookPlugin = (name) => {
@@ -416,6 +581,13 @@
         const oe = player.error.bind(player);
         player.error = function (err) {
             if (err && S.currentSession && !S.currentSession.ended) return null;
+            const errMsg = (typeof err === 'string') ? err : (err && err.message) || '';
+            if (/僅提供播放一部影片|僅限一台裝置|僅允許一個裝置|Duplicate login/i.test(errMsg)) {
+                console.warn('[動畫瘋] 🛡 已攔截 player.error 設備鎖衝突:', errMsg);
+                const cur = getCurrentSn();
+                if (cur) unlockSn(cur).then(() => restoreCurrentLock(cur));
+                return null;
+            }
             return oe.apply(this, arguments);
         };
     }
@@ -437,22 +609,37 @@
         tryHook();
     }
 
+    // 頁面卸載或跳轉下一集時自動釋放當前集設備鎖（防止預熱後 0 秒進下一集時上一集鎖未退）
+    function initUnloadUnlock() {
+        let released = false;
+        const releaseCurrent = () => {
+            if (released) return;
+            const cur = getCurrentSn();
+            if (!cur) return;
+            released = true;
+            S.sessionEpoch++;
+            unlockSn(cur, true);
+        };
+        W.addEventListener('pagehide', releaseCurrent);
+        W.addEventListener('beforeunload', releaseCurrent);
+    }
+
     // ============================================================
     //  片尾預熱觸發（獨立於播放器掛鉤，避免依賴 videojs 初始化）
     // ============================================================
-    // 是否廣告中：只看「廣告跳過按鈕」是否存在（VAST / 原生廣告各有自己的按鈕）
-    // 不再依賴易變的 ad-playing 類名，覆蓋所有廣告類型，避免漏靜音
+    // 是否廣告中：使用播放器權威生命週期類名 vjs-*-ad-playing 判斷（避免跳過按鈕殘留導致正片被誤靜音）
     function isAdPhase() {
-        const btns = D.querySelectorAll('#adSkipButton, .vast-skip-button, .nativeAD-skip-button');
-        for (const b of btns) {
-            const cs = (b.currentStyle || W.getComputedStyle(b));
-            if (cs && cs.display !== 'none' && cs.visibility !== 'hidden') return true;
+        const els = D.querySelectorAll('#ani_video, .video-js, [class*="ad-playing"]');
+        for (const el of els) {
+            const cls = el.getAttribute('class') || '';
+            if (/(^|\s)vjs-[a-z0-9-]*ad-playing(\s|$)/.test(cls)) return true;
         }
         return false;
     }
 
     function checkWarmupTrigger() {
         if (S.warmupStarted) return;
+        if (isAdPhase()) return;
         if (!S.deviceId) return;
 
         const video = D.querySelector(SEL.video);
@@ -491,19 +678,33 @@
             // SPA 切集偵測
             const cur = getCurrentSn();
             if (cur !== null && cur !== lastSn) {
+                const prevSn = lastSn;
                 lastSn = cur;
+                S.sessionEpoch++;         // ← 中止舊集仍在進行中的異步預熱流程
+                S.lockBusy = false;
                 S.warmupStarted = false;
                 S.armed = false;          // ← 切集後重新武裝，等新集 currentTime 回到開頭
                 S.warming.clear();
                 S.currentSession = null;
                 S.cishuStart = 0;
-                console.log('[動畫瘋] 偵測到切集 sn=' + cur + '，重置預熱狀態');
+                if (prevSn && prevSn !== cur) {
+                    unlockSn(prevSn);     // ← 立即釋放上一集設備鎖，避免新集無廣告秒進時撞鎖
+                }
+                console.log('[動畫瘋] 偵測到切集 sn=' + cur + '，已釋放上一集設備鎖並重置預熱狀態');
             }
 
             const video = D.querySelector(SEL.video);
             if (video) {
-                // 靜音策略：廣告期間靜音，正片解除
-                video.muted = isAdPhase();
+                // 靜音策略：僅在廣告期間自動靜音，正片僅恢復腳本自動靜的音（尊重用戶手動靜音）
+                if (isAdPhase()) {
+                    if (!video.muted) {
+                        video.muted = true;
+                        S.autoMuted = true;
+                    }
+                } else if (S.autoMuted) {
+                    if (video.muted) video.muted = false;
+                    S.autoMuted = false;
+                }
                 // 片尾觸發預熱
                 checkWarmupTrigger();
             }
@@ -677,8 +878,9 @@
         initDomWatcher();
         initAgeGuard();
         initPlayerHook();
+        initUnloadUnlock();
         startWarmupPolling(); // 預熱輪詢獨立啟動，不依賴 videojs
-        console.log('[動畫瘋] 去廣告 + 下一集預熱腳本已載入 v3.4.0');
+        console.log('[動畫瘋] 去廣告 + 下一集預熱腳本已載入 v3.5.0');
     }
     boot();
 })();
